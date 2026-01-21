@@ -25,12 +25,17 @@ def get_admin_back_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def get_user_management_keyboard(user_id: int, is_blocked: bool) -> InlineKeyboardMarkup:
+def get_user_management_keyboard(user_id: int, is_blocked: bool, user_role: str = None) -> InlineKeyboardMarkup:
     """Клавиатура управления пользователем"""
-    buttons = [
-        [InlineKeyboardButton(text="💳 Выдать подписку", callback_data=f"admin:grant_sub:{user_id}")],
-        [InlineKeyboardButton(text="❌ Отменить подписку", callback_data=f"admin:cancel_sub:{user_id}")],
-    ]
+    buttons = []
+    
+    if user_role == "employer":
+        # Для работодателей: выдача бесплатных вакансий
+        buttons.append([InlineKeyboardButton(text="📋 Выдать бесплатные вакансии", callback_data=f"admin:grant_vacancies:{user_id}")])
+    else:
+        # Для работников: выдача подписки
+        buttons.append([InlineKeyboardButton(text="💳 Выдать подписку", callback_data=f"admin:grant_sub:{user_id}")])
+        buttons.append([InlineKeyboardButton(text="❌ Отменить подписку", callback_data=f"admin:cancel_sub:{user_id}")])
     
     if is_blocked:
         buttons.append([InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"admin:unblock:{user_id}")])
@@ -55,6 +60,7 @@ def get_subscription_management_keyboard() -> InlineKeyboardMarkup:
     """Меню управления подписками"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Выдать подписку", callback_data="admin:grant_subscription")],
+        [InlineKeyboardButton(text="📋 Выдать бесплатные вакансии", callback_data="admin:grant_vacancies_menu")],
         [InlineKeyboardButton(text="📋 Активные подписки", callback_data="admin:active_subs")],
         [InlineKeyboardButton(text=texts.BTN_BACK, callback_data="admin:menu")],
     ])

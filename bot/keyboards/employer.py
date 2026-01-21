@@ -27,7 +27,8 @@ def get_my_vacancies_keyboard(vacancies: Sequence[Vacancy]) -> InlineKeyboardMar
         status = "✅" if vacancy.is_active else "❌"
         pin = "📌" if vacancy.is_pinned_now() else ""
         boost = "🔝" if vacancy.is_boosted else ""
-        text = f"{status}{pin}{boost} {vacancy.title[:30]}"
+        # Добавляем ID вакансии в текст
+        text = f"{status}{pin}{boost} ID:{vacancy.id} {vacancy.title[:25]}"
         buttons.append([
             InlineKeyboardButton(text=text, callback_data=f"vacancy:{vacancy.id}")
         ])
@@ -83,8 +84,16 @@ def get_vacancy_edit_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+def get_cancel_edit_vacancy_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура с кнопкой отмены редактирования вакансии"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_edit_vacancy:{vacancy_id}")],
+    ])
+
+
 def get_paid_services_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура платных услуг"""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Мои покупки", callback_data="employer:my_payments")],
         [InlineKeyboardButton(text=texts.BTN_BACK, callback_data="employer:menu")],
     ])

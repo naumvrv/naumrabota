@@ -245,6 +245,35 @@ async def show_my_vacancies(callback: CallbackQuery, session: AsyncSession):
             )
 
 
+async def show_vacancy_details_helper(bot: Bot, user_id: int, vacancy):
+    """Вспомогательная функция для показа вакансии"""
+    expires = vacancy.created_at + timedelta(days=config.limits.vacancy_lifetime_days)
+    details_text = texts.VACANCY_DETAILS.format(
+        title=vacancy.title,
+        city=vacancy.city,
+        salary=vacancy.salary,
+        description=vacancy.description,
+        views=vacancy.views_count,
+        responses=vacancy.responses_count,
+        created=vacancy.created_at.strftime("%d.%m.%Y"),
+        expires=expires.strftime("%d.%m.%Y")
+    )
+    
+    if vacancy.photo_id:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=vacancy.photo_id,
+            caption=details_text,
+            reply_markup=get_vacancy_management_keyboard(vacancy.id, vacancy.is_active)
+        )
+    else:
+        await bot.send_message(
+            chat_id=user_id,
+            text=details_text,
+            reply_markup=get_vacancy_management_keyboard(vacancy.id, vacancy.is_active)
+        )
+
+
 @router.callback_query(F.data.startswith("vacancy:"))
 async def show_vacancy_details(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     """Показ деталей вакансии"""
@@ -418,66 +447,104 @@ async def edit_vacancy_field(callback: CallbackQuery, state: FSMContext):
     
     prompt = prompts.get(field, "")
     
+    from bot.keyboards.employer import get_cancel_edit_vacancy_keyboard
+    
     if field == "location":
         await callback.message.answer(prompt, reply_markup=get_location_keyboard())
         await state.set_state(EmployerEditStates.editing_location)
     elif field == "photo":
         try:
-            await callback.message.edit_caption(caption=prompt)
+            await callback.message.edit_caption(caption=prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(prompt)
+            await callback.message.answer(prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         await state.set_state(EmployerEditStates.editing_photo)
     elif field == "description":
         try:
-            await callback.message.edit_caption(caption=prompt)
+            await callback.message.edit_caption(caption=prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(prompt)
+            await callback.message.answer(prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         await state.set_state(EmployerEditStates.editing_description)
     elif field == "title":
         try:
-            await callback.message.edit_caption(caption=prompt)
+            await callback.message.edit_caption(caption=prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(prompt)
+            await callback.message.answer(prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         await state.set_state(EmployerEditStates.editing_title)
     elif field == "city":
         try:
-            await callback.message.edit_caption(caption=prompt)
+            await callback.message.edit_caption(caption=prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(prompt)
+            await callback.message.answer(prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         await state.set_state(EmployerEditStates.editing_city)
     elif field == "salary":
         try:
-            await callback.message.edit_caption(caption=prompt)
+            await callback.message.edit_caption(caption=prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         except Exception:
             try:
                 await callback.message.delete()
             except Exception:
                 pass
-            await callback.message.answer(prompt)
+            await callback.message.answer(prompt, reply_markup=get_cancel_edit_vacancy_keyboard(vacancy_id))
         await state.set_state(EmployerEditStates.editing_salary)
 
 
+@router.callback_query(F.data.startswith("cancel_edit_vacancy:"))
+async def cancel_edit_vacancy(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    """Отмена редактирования вакансии"""
+    vacancy_id = int(callback.data.split(":")[1])
+    await state.clear()
+    await callback.answer("Редактирование отменено")
+    
+    # Возвращаемся в меню редактирования вакансии
+    try:
+        await callback.message.edit_caption(
+            caption="✏️ Выберите что изменить:",
+            reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+        )
+    except Exception:
+        # Если не получается отредактировать caption (нет фото), пробуем текст
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            "✏️ Выберите что изменить:",
+            reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+        )
+
+
 @router.message(EmployerEditStates.editing_title)
-async def save_edit_title(message: Message, session: AsyncSession, state: FSMContext):
+async def save_edit_title(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение нового названия"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено")
+        # Возвращаемся в меню редактирования
+        await message.answer(
+            "✏️ Выберите что изменить:",
+            reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+        )
+        return
     
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
@@ -490,10 +557,24 @@ async def save_edit_title(message: Message, session: AsyncSession, state: FSMCon
 
 
 @router.message(EmployerEditStates.editing_city)
-async def save_edit_city(message: Message, session: AsyncSession, state: FSMContext):
+async def save_edit_city(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение нового города"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено")
+        # Возвращаемся в меню редактирования
+        try:
+            await message.answer(
+                "✏️ Выберите что изменить:",
+                reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+            )
+        except Exception:
+            pass
+        return
     
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
@@ -506,10 +587,24 @@ async def save_edit_city(message: Message, session: AsyncSession, state: FSMCont
 
 
 @router.message(EmployerEditStates.editing_salary)
-async def save_edit_salary(message: Message, session: AsyncSession, state: FSMContext):
+async def save_edit_salary(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение новой зарплаты"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено")
+        # Возвращаемся в меню редактирования
+        try:
+            await message.answer(
+                "✏️ Выберите что изменить:",
+                reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+            )
+        except Exception:
+            pass
+        return
     
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
@@ -522,10 +617,24 @@ async def save_edit_salary(message: Message, session: AsyncSession, state: FSMCo
 
 
 @router.message(EmployerEditStates.editing_description)
-async def save_edit_description(message: Message, session: AsyncSession, state: FSMContext):
+async def save_edit_description(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение нового описания"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено")
+        # Возвращаемся в меню редактирования
+        try:
+            await message.answer(
+                "✏️ Выберите что изменить:",
+                reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+            )
+        except Exception:
+            pass
+        return
     
     is_valid, error = validate_description_length(message.text or "")
     if not is_valid:
@@ -537,11 +646,26 @@ async def save_edit_description(message: Message, session: AsyncSession, state: 
     await message.answer("✅ Описание обновлено!", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
 
 
-@router.message(EmployerEditStates.editing_location, F.location)
-async def save_edit_location(message: Message, session: AsyncSession, state: FSMContext):
+@router.message(EmployerEditStates.editing_location)
+async def save_edit_location(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение новой геопозиции"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено", reply_markup=ReplyKeyboardRemove())
+        # Возвращаемся в меню редактирования
+        await message.answer(
+            "✏️ Выберите что изменить:",
+            reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+        )
+        return
+    
+    if not message.location:
+        await message.answer("Пожалуйста, отправьте геолокацию или нажмите 'Отмена'")
+        return
     
     await crud.update_vacancy(
         session, vacancy_id,
@@ -556,11 +680,29 @@ async def save_edit_location(message: Message, session: AsyncSession, state: FSM
     await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
 
 
-@router.message(EmployerEditStates.editing_photo, F.photo)
-async def save_edit_photo(message: Message, session: AsyncSession, state: FSMContext):
+@router.message(EmployerEditStates.editing_photo)
+async def save_edit_photo(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Сохранение нового фото"""
     data = await state.get_data()
     vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Редактирование отменено")
+        # Возвращаемся в меню редактирования
+        try:
+            await message.answer(
+                "✏️ Выберите что изменить:",
+                reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+            )
+        except Exception:
+            pass
+        return
+    
+    if not message.photo:
+        await message.answer("Пожалуйста, отправьте фото или нажмите 'Отмена'")
+        return
     
     photo_id = message.photo[-1].file_id
     await crud.update_vacancy(session, vacancy_id, photo_id=photo_id)
@@ -590,3 +732,42 @@ async def show_paid_services(callback: CallbackQuery):
             texts.PAID_SERVICES,
             reply_markup=get_paid_services_keyboard()
         )
+
+
+@router.callback_query(F.data == "employer:my_payments")
+async def show_my_payments(callback: CallbackQuery, session: AsyncSession):
+    """Показ истории покупок работодателя"""
+    await callback.answer()
+    
+    user_id = callback.from_user.id
+    payments = await crud.get_user_payments(session, user_id)
+    
+    if not payments:
+        text = "📋 История покупок\n\nУ вас пока нет покупок."
+    else:
+        text = "📋 История покупок:\n\n"
+        for payment in payments[:20]:  # Последние 20
+            status = "✅ Оплачено" if payment.is_confirmed else "⏳ Ожидает"
+            date_str = payment.created_at.strftime("%d.%m.%Y %H:%M")
+            
+            payment_type_names = {
+                "vacancy_publication": "📌 Публикация вакансии",
+                "vacancy_boost": "🔝 Поднятие вакансии",
+                "vacancy_pin_1d": "📍 Закрепление (1 день)",
+                "vacancy_pin_3d": "📍 Закрепление (3 дня)",
+                "vacancy_pin_7d": "📍 Закрепление (7 дней)",
+            }
+            
+            payment_name = payment_type_names.get(payment.payment_type, payment.payment_type)
+            text += f"{payment_name}\n"
+            text += f"{status} | {payment.amount} ₽ | {date_str}\n\n"
+    
+    # Если предыдущее сообщение было с фото, удаляем его
+    if callback.message.photo:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=get_paid_services_keyboard())
+    else:
+        await callback.message.edit_text(text, reply_markup=get_paid_services_keyboard())

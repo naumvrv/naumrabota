@@ -12,6 +12,7 @@ from bot.database import crud
 # Типы платежей
 class PaymentType:
     WORKER_SUBSCRIPTION = "worker_subscription"
+    EMPLOYER_SUBSCRIPTION = "employer_subscription"
     VACANCY_PUBLICATION = "vacancy_publication"
     VACANCY_BOOST = "vacancy_boost"
     VACANCY_PIN_1D = "vacancy_pin_1d"
@@ -23,6 +24,7 @@ def get_payment_amount(payment_type: str) -> int:
     """Получение суммы платежа по типу"""
     amounts = {
         PaymentType.WORKER_SUBSCRIPTION: config.prices.worker_subscription,
+        PaymentType.EMPLOYER_SUBSCRIPTION: config.prices.worker_subscription,  # Та же цена
         PaymentType.VACANCY_PUBLICATION: config.prices.vacancy_publication,
         PaymentType.VACANCY_BOOST: config.prices.vacancy_boost,
         PaymentType.VACANCY_PIN_1D: config.prices.vacancy_pin_1d,
@@ -36,6 +38,7 @@ def get_payment_description(payment_type: str) -> str:
     """Получение описания платежа"""
     descriptions = {
         PaymentType.WORKER_SUBSCRIPTION: "Подписка работника на 30 дней",
+        PaymentType.EMPLOYER_SUBSCRIPTION: "Подписка работодателя на 30 дней",
         PaymentType.VACANCY_PUBLICATION: "Публикация вакансии",
         PaymentType.VACANCY_BOOST: "Поднятие вакансии",
         PaymentType.VACANCY_PIN_1D: "Закрепление вакансии на 1 день",
@@ -101,7 +104,7 @@ async def process_successful_payment(
     # Активируем услугу
     if payment_type == PaymentType.WORKER_SUBSCRIPTION:
         await crud.grant_subscription(session, user_id, days=30)
-        
+    
     elif payment_type == PaymentType.VACANCY_PUBLICATION:
         # Вакансия уже создана, ничего дополнительно делать не нужно
         pass

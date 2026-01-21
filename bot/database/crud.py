@@ -59,7 +59,14 @@ async def change_role(session: AsyncSession, telegram_id: int, role: str) -> Opt
 
 async def get_all_users(session: AsyncSession, role: Optional[str] = None, limit: Optional[int] = None) -> Sequence[User]:
     """Получение всех пользователей (опционально по роли)"""
+    from sqlalchemy.orm import selectinload
+    
     query = select(User).order_by(User.created_at.desc())
+    
+    # Eager load relationships в зависимости от роли
+    if role == "employer":
+        query = query.options(selectinload(User.vacancies))
+    
     if role:
         query = query.where(User.role == role)
     if limit:
@@ -363,6 +370,7 @@ async def check_vacancy_limit(session: AsyncSession, user_id: int) -> tuple[bool
     if not user:
         return False, 0
     
+    # Работодатели не имеют подписки - только бесплатные вакансии
     today = date.today()
     first_of_month = today.replace(day=1)
     
@@ -373,6 +381,28 @@ async def check_vacancy_limit(session: AsyncSession, user_id: int) -> tuple[bool
         await session.commit()
     
     return user.free_vacancies_left > 0, user.free_vacancies_left
+
+
+async def grant_free_vacancies(session: AsyncSession, user_id: int, count: int) -> Optional[User]:
+    """Выдача бесплатных вакансий работодателю"""
+    user = await get_user(session, user_id)
+    if not user:
+        return None
+    
+    user.free_vacancies_left += count
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def get_user_payments(session: AsyncSession, user_id: int) -> Sequence[Payment]:
+    """Получение всех платежей пользователя"""
+    result = await session.execute(
+        select(Payment)
+        .where(Payment.user_id == user_id)
+        .order_by(Payment.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 async def decrement_free_vacancies(session: AsyncSession, user_id: int) -> None:

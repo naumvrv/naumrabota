@@ -44,3 +44,5 @@ class AdminSubscriptionStates(StatesGroup):
     
     waiting_for_user_id = State()
     waiting_for_days = State()
+    waiting_for_vacancies_count = State()
+    waiting_for_employer_id = State()

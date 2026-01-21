@@ -17,6 +17,8 @@ from bot.keyboards.admin import (
     get_broadcast_confirm_keyboard,
     get_vacancy_admin_keyboard,
 )
+from bot.keyboards.worker import get_worker_menu
+from bot.keyboards.employer import get_employer_menu
 from bot.utils import texts
 from bot.services.statistics import get_bot_statistics
 from bot.states.employer_states import AdminBroadcastStates, AdminSearchStates, AdminSubscriptionStates
@@ -28,6 +30,66 @@ router = Router(name="admin")
 def is_admin(user_id: int) -> bool:
     """Проверка является ли пользователь админом"""
     return user_id == config.admin.admin_id
+
+
+@router.message(Command("user"))
+async def show_user_info(message: Message, session: AsyncSession):
+    """Показ информации о пользователе по команде /user ID"""
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Нет доступа")
+        return
+    
+    # Парсим ID из команды
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("❌ Использование: /user [Telegram_ID]")
+        return
+    
+    try:
+        user_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ ID должен быть числом")
+        return
+    
+    # Получаем пользователя
+    user = await crud.get_user(session, user_id)
+    if not user:
+        await message.answer(f"❌ Пользователь с ID {user_id} не найден")
+        return
+    
+    # Формируем информацию
+    role_text = "👷 Работник" if user.role == "worker" else "🏢 Работодатель"
+    sub_text = "✅ Активна" if user.has_active_subscription() else "❌ Нет"
+    
+    info_text = f"""👤 <b>Информация о пользователе</b>
+
+🆔 Telegram ID: <code>{user.telegram_id}</code>
+👤 Имя: {user.name or 'Не указано'}
+📋 Роль: {role_text}
+🎂 Возраст: {user.age or 'Не указано'}
+🏙 Город: {user.city or 'Не указано'}
+💳 Подписка: {sub_text}
+📅 Регистрация: {user.created_at.strftime('%d.%m.%Y %H:%M')}
+"""
+    
+    if user.role == "worker":
+        info_text += f"\n📝 Резюме: {user.resume[:100] if user.resume else 'Не указано'}..."
+    elif user.role == "employer":
+        # Считаем вакансии
+        from sqlalchemy import select, func
+        from bot.database.models import Vacancy
+        
+        result = await session.execute(
+            select(func.count(Vacancy.id)).where(Vacancy.employer_id == user.telegram_id)
+        )
+        vacancies_count = result.scalar() or 0
+        
+        info_text += f"\n📋 Вакансий создано: {vacancies_count}"
+    
+    await message.answer(
+        info_text,
+        reply_markup=get_admin_back_keyboard()
+    )
 
 
 # ============== Вход в админку ==============
@@ -78,12 +140,12 @@ async def exit_admin(callback: CallbackQuery, session: AsyncSession, state: FSMC
     if user and user.role == "worker":
         await callback.message.edit_text(
             texts.WORKER_MENU,
-            reply_markup=None  # Будет обработано в start.py
+            reply_markup=get_worker_menu()
         )
     else:
         await callback.message.edit_text(
             texts.EMPLOYER_MENU,
-            reply_markup=None
+            reply_markup=get_employer_menu()
         )
 
 
@@ -186,7 +248,8 @@ async def show_employers_list(callback: CallbackQuery, session: AsyncSession):
     
     text = "🏢 Список работодателей (последние 50):\n\n"
     for user in employers:
-        vacancies_count = len(user.vacancies) if hasattr(user, 'vacancies') else 0
+        # Теперь vacancies загружены через selectinload, можно безопасно использовать
+        vacancies_count = len(user.vacancies) if user.vacancies else 0
         text += f"• ID: {user.telegram_id} | {user.name or 'Без имени'} | Вакансий: {vacancies_count}\n"
     
     text += f"\n💡 Для просмотра пользователя: /user ID"
@@ -256,7 +319,7 @@ async def process_search_user(message: Message, session: AsyncSession, state: FS
     
     await message.answer(
         user_info,
-        reply_markup=get_user_management_keyboard(user_id, user.is_blocked)
+        reply_markup=get_user_management_keyboard(user_id, user.is_blocked, user.role)
     )
     
     # Логируем действие
@@ -288,9 +351,11 @@ async def block_user(callback: CallbackQuery, session: AsyncSession):
     await callback.answer(texts.ADMIN_USER_BLOCKED.format(user_id=user_id))
     
     # Обновляем кнопки
-    await callback.message.edit_reply_markup(
-        reply_markup=get_user_management_keyboard(user_id, True)
-    )
+    user = await crud.get_user(session, user_id)
+    if user:
+        await callback.message.edit_reply_markup(
+            reply_markup=get_user_management_keyboard(user_id, True, user.role)
+        )
 
 
 @router.callback_query(F.data.startswith("admin:unblock:"))
@@ -312,9 +377,11 @@ async def unblock_user(callback: CallbackQuery, session: AsyncSession):
     
     await callback.answer(texts.ADMIN_USER_UNBLOCKED.format(user_id=user_id))
     
-    await callback.message.edit_reply_markup(
-        reply_markup=get_user_management_keyboard(user_id, False)
-    )
+    user = await crud.get_user(session, user_id)
+    if user:
+        await callback.message.edit_reply_markup(
+            reply_markup=get_user_management_keyboard(user_id, False, user.role)
+        )
 
 
 # ============== Управление подписками ==============
@@ -330,6 +397,68 @@ async def show_subscriptions_menu(callback: CallbackQuery):
     await callback.message.edit_text(
         "💰 Управление подписками",
         reply_markup=get_subscription_management_keyboard()
+    )
+
+
+@router.callback_query(F.data == "admin:grant_vacancies_menu")
+async def start_grant_vacancies_from_menu(callback: CallbackQuery, state: FSMContext):
+    """Начало выдачи бесплатных вакансий из меню подписок"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    await callback.answer()
+    await callback.message.edit_text(
+        "📋 Выдача бесплатных вакансий работодателям\n\nВведите Telegram ID работодателя:",
+        reply_markup=get_admin_back_keyboard()
+    )
+    await state.set_state(AdminSubscriptionStates.waiting_for_employer_id)
+
+
+@router.callback_query(F.data == "admin:active_subs")
+async def show_active_subscriptions(callback: CallbackQuery, session: AsyncSession):
+    """Показ списка активных подписок"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    await callback.answer()
+    
+    from datetime import datetime
+    from sqlalchemy import select, and_
+    from bot.database.models import User
+    
+    # Получаем всех пользователей с активными подписками
+    now = datetime.utcnow()
+    query = select(User).where(
+        and_(
+            User.subscription_until.isnot(None),
+            User.subscription_until > now
+        )
+    ).order_by(User.subscription_until.desc())
+    
+    result = await session.execute(query)
+    users = result.scalars().all()
+    
+    if not users:
+        await callback.message.edit_text(
+            "📋 Активные подписки\n\nСписок пуст",
+            reply_markup=get_admin_back_keyboard()
+        )
+        return
+    
+    text = f"📋 Активные подписки ({len(users)}):\n\n"
+    for user in users:
+        role_emoji = "👷" if user.role == "worker" else "🏢"
+        days_left = (user.subscription_until - now).days
+        text += f"{role_emoji} ID: <code>{user.telegram_id}</code> | {user.name or 'Без имени'}\n"
+        text += f"   До: {user.subscription_until.strftime('%d.%m.%Y')} ({days_left} дн.)\n\n"
+    
+    text += "💡 Для управления: /user [ID]"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_admin_back_keyboard()
     )
 
 
@@ -407,6 +536,78 @@ async def process_subscription_days(message: Message, session: AsyncSession, sta
     )
 
 
+@router.message(AdminSubscriptionStates.waiting_for_employer_id)
+async def process_employer_id_for_vacancies(message: Message, session: AsyncSession, state: FSMContext):
+    """Обработка ID работодателя для выдачи вакансий"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Введите корректный ID (число)")
+        return
+    
+    user = await crud.get_user(session, user_id)
+    if not user:
+        await message.answer("❌ Пользователь не найден")
+        await state.clear()
+        return
+    
+    if user.role != "employer":
+        await message.answer("❌ Это не работодатель. Введите ID работодателя.")
+        return
+    
+    await state.update_data(vacancies_user_id=user_id)
+    await message.answer(
+        f"Работодатель: {user.name or 'Без имени'} (ID: {user_id})\nТекущий баланс: {user.free_vacancies_left} вакансий\n\nВведите количество вакансий для выдачи:",
+        reply_markup=get_admin_back_keyboard()
+    )
+    await state.set_state(AdminSubscriptionStates.waiting_for_vacancies_count)
+
+
+@router.message(AdminSubscriptionStates.waiting_for_vacancies_count)
+async def process_grant_vacancies(message: Message, session: AsyncSession, state: FSMContext):
+    """Обработка выдачи бесплатных вакансий"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    try:
+        count = int(message.text.strip())
+        if count <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите корректное количество (положительное число)")
+        return
+    
+    data = await state.get_data()
+    user_id = data.get("vacancies_user_id")
+    
+    if not user_id:
+        await message.answer("❌ Ошибка: не найден ID работодателя. Начните заново.")
+        await state.clear()
+        return
+    
+    user = await crud.grant_free_vacancies(session, user_id, count)
+    if not user:
+        await message.answer("❌ Пользователь не найден")
+        await state.clear()
+        return
+    
+    await crud.log_admin_action(
+        session,
+        message.from_user.id,
+        "grant_free_vacancies",
+        f"Выдано {count} бесплатных вакансий работодателю {user_id}"
+    )
+    
+    await state.clear()
+    await message.answer(
+        f"✅ Работодателю {user_id} выдано {count} бесплатных вакансий.\n\nТекущий баланс: {user.free_vacancies_left}",
+        reply_markup=get_admin_back_keyboard()
+    )
+
+
 @router.callback_query(F.data.startswith("admin:grant_sub:"))
 async def quick_grant_subscription(callback: CallbackQuery, state: FSMContext):
     """Быстрая выдача подписки из карточки пользователя"""
@@ -424,10 +625,36 @@ async def quick_grant_subscription(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminSubscriptionStates.waiting_for_days)
 
 
+@router.callback_query(F.data.startswith("admin:grant_vacancies:"))
+async def start_grant_vacancies(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    """Начало выдачи бесплатных вакансий работодателю"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    user_id = int(callback.data.split(":")[2])
+    
+    # Проверяем что это работодатель
+    user = await crud.get_user(session, user_id)
+    if not user or user.role != "employer":
+        await callback.answer("❌ Это не работодатель", show_alert=True)
+        return
+    
+    await callback.answer()
+    await state.update_data(vacancies_user_id=user_id)
+    await callback.message.edit_text(
+        f"Введите количество бесплатных вакансий для работодателя {user_id}:\n\nТекущий баланс: {user.free_vacancies_left}",
+        reply_markup=get_admin_back_keyboard()
+    )
+    await state.set_state(AdminSubscriptionStates.waiting_for_vacancies_count)
+
+
 @router.callback_query(F.data == "admin:back", AdminSubscriptionStates.waiting_for_user_id)
 @router.callback_query(F.data == "admin:back", AdminSubscriptionStates.waiting_for_days)
+@router.callback_query(F.data == "admin:back", AdminSubscriptionStates.waiting_for_vacancies_count)
+@router.callback_query(F.data == "admin:back", AdminSubscriptionStates.waiting_for_employer_id)
 async def cancel_subscription_grant(callback: CallbackQuery, state: FSMContext):
-    """Отмена выдачи подписки"""
+    """Отмена выдачи подписки/вакансий"""
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -463,7 +690,7 @@ async def cancel_subscription(callback: CallbackQuery, session: AsyncSession):
     user = await crud.get_user(session, user_id)
     if user:
         await callback.message.edit_reply_markup(
-            reply_markup=get_user_management_keyboard(user_id, user.is_blocked)
+            reply_markup=get_user_management_keyboard(user_id, user.is_blocked, user.role)
         )
 
 

@@ -55,20 +55,27 @@ async def buy_subscription(callback: CallbackQuery, bot: Bot):
     
     if not provider_token:
         await callback.message.answer(
-            "⚠️ Платежная система временно недоступна. Попробуйте позже."
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
         )
         return
     
-    await bot.send_invoice(
-        chat_id=user_id,
-        title="Подписка на 30 дней",
-        description=description,
-        payload=payload,
-        provider_token=provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label="Подписка", amount=amount * 100)],  # В копейках
-        start_parameter="subscription",
-    )
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title="Подписка на 30 дней",
+            description=description,
+            payload=payload,
+            provider_token=provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label="Подписка", amount=amount * 100)],  # В копейках
+            start_parameter="subscription",
+        )
+    except Exception as e:
+        await callback.message.answer(
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+        )
+
+
 
 
 # ============== Оплата публикации вакансии ==============
@@ -87,23 +94,28 @@ async def pay_vacancy_publication(callback: CallbackQuery, bot: Bot, state: FSMC
     
     if not provider_token:
         await callback.message.answer(
-            "⚠️ Платежная система временно недоступна. Попробуйте позже."
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
         )
         return
     
     # Сохраняем что после оплаты нужно создать вакансию
     await state.update_data(pending_vacancy_payment=True)
     
-    await bot.send_invoice(
-        chat_id=user_id,
-        title="Публикация вакансии",
-        description=description,
-        payload=payload,
-        provider_token=provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label="Публикация вакансии", amount=amount * 100)],
-        start_parameter="vacancy_publication",
-    )
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title="Публикация вакансии",
+            description=description,
+            payload=payload,
+            provider_token=provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label="Публикация вакансии", amount=amount * 100)],
+            start_parameter="vacancy_publication",
+        )
+    except Exception as e:
+        await callback.message.answer(
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+        )
 
 
 # ============== Поднятие вакансии ==============
@@ -123,20 +135,25 @@ async def pay_boost_vacancy(callback: CallbackQuery, bot: Bot):
     
     if not provider_token:
         await callback.message.answer(
-            "⚠️ Платежная система временно недоступна. Попробуйте позже."
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
         )
         return
     
-    await bot.send_invoice(
-        chat_id=user_id,
-        title="Поднятие вакансии",
-        description=description,
-        payload=payload,
-        provider_token=provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label="Поднятие вакансии", amount=amount * 100)],
-        start_parameter="vacancy_boost",
-    )
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title="Поднятие вакансии",
+            description=description,
+            payload=payload,
+            provider_token=provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label="Поднятие вакансии", amount=amount * 100)],
+            start_parameter="vacancy_boost",
+        )
+    except Exception as e:
+        await callback.message.answer(
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+        )
 
 
 # ============== Закрепление вакансии ==============
@@ -167,20 +184,25 @@ async def pay_pin_vacancy(callback: CallbackQuery, bot: Bot):
     
     if not provider_token:
         await callback.message.answer(
-            "⚠️ Платежная система временно недоступна. Попробуйте позже."
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
         )
         return
     
-    await bot.send_invoice(
-        chat_id=user_id,
-        title=f"Закрепление на {days} дн.",
-        description=description,
-        payload=payload,
-        provider_token=provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label=f"Закрепление на {days} дн.", amount=amount * 100)],
-        start_parameter="vacancy_pin",
-    )
+    try:
+        await bot.send_invoice(
+            chat_id=user_id,
+            title=f"Закрепление на {days} дн.",
+            description=description,
+            payload=payload,
+            provider_token=provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label=f"Закрепление на {days} дн.", amount=amount * 100)],
+            start_parameter="vacancy_pin",
+        )
+    except Exception as e:
+        await callback.message.answer(
+            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+        )
 
 
 # ============== Pre-checkout query ==============

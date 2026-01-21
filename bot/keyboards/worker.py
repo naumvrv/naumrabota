@@ -70,3 +70,10 @@ def get_no_vacancies_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="worker:menu")],
     ])
+
+
+def get_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура с кнопкой отмены"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="worker:cancel_edit")],
+    ])

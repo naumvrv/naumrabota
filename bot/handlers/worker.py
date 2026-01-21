@@ -177,9 +177,58 @@ async def show_edit_resume(callback: CallbackQuery, session: AsyncSession, bot: 
     )
 
 
+@router.callback_query(F.data == "worker:cancel_edit")
+async def cancel_edit_resume(callback: CallbackQuery, session: AsyncSession, bot: Bot, state: FSMContext):
+    """Отмена редактирования резюме"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    await state.clear()
+    await callback.answer("Редактирование отменено")
+    
+    user = await crud.get_user(session, callback.from_user.id)
+    
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    # Пытаемся отредактировать существующее сообщение
+    if resume_message_id:
+        try:
+            await bot.edit_message_caption(
+                chat_id=callback.message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+            return
+        except Exception:
+            pass
+    
+    # Если не получилось, удаляем старое и отправляем новое
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    
+    await bot.send_photo(
+        chat_id=callback.from_user.id,
+        photo=user.photo_id,
+        caption=resume_preview,
+        reply_markup=get_resume_edit_keyboard()
+    )
+
+
 @router.callback_query(F.data.startswith("edit_resume:"))
 async def start_edit_field(callback: CallbackQuery, state: FSMContext):
     """Начало редактирования поля резюме"""
+    from bot.keyboards.worker import get_cancel_keyboard
+    
     field = callback.data.split(":")[1]
     await callback.answer()
     
@@ -194,16 +243,75 @@ async def start_edit_field(callback: CallbackQuery, state: FSMContext):
     
     prompt, state_obj = prompts.get(field, ("", None))
     if state_obj:
+        # Сохраняем ID сообщения с резюме для последующего редактирования
+        await state.update_data(resume_message_id=callback.message.message_id)
+        
         if field == "location":
             await callback.message.answer(prompt, reply_markup=get_location_keyboard())
         else:
-            await callback.message.edit_text(prompt)
+            # Проверяем, есть ли фото в сообщении
+            if callback.message.photo:
+                try:
+                    await callback.message.edit_caption(
+                        caption=prompt,
+                        reply_markup=get_cancel_keyboard()
+                    )
+                except Exception:
+                    # Если не получилось отредактировать, удаляем и отправляем новое
+                    try:
+                        await callback.message.delete()
+                    except Exception:
+                        pass
+                    new_msg = await callback.message.answer(prompt, reply_markup=get_cancel_keyboard())
+                    await state.update_data(resume_message_id=new_msg.message_id)
+            else:
+                await callback.message.edit_text(prompt, reply_markup=get_cancel_keyboard())
         await state.set_state(state_obj)
 
 
 @router.message(WorkerEditStates.editing_name)
-async def edit_name(message: Message, session: AsyncSession, state: FSMContext):
+async def edit_name(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование имени"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        # Удаляем сообщение пользователя
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        # Редактируем сообщение с резюме
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_EMPTY_TEXT)
@@ -211,15 +319,82 @@ async def edit_name(message: Message, session: AsyncSession, state: FSMContext):
     
     await crud.update_user(session, message.from_user.id, name=message.text.strip())
     await state.clear()
-    await message.answer("✅ Имя обновлено!")
     
-    # Показываем меню работника
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    # Удаляем сообщение пользователя
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
+    # Показываем обновленное резюме
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    # Редактируем сообщение с резюме
+    try:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=resume_message_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
+    except Exception:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=user.photo_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
 
 
 @router.message(WorkerEditStates.editing_age)
-async def edit_age(message: Message, session: AsyncSession, state: FSMContext):
+async def edit_age(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование возраста"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
     is_valid, age, error = validate_age(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_INVALID_AGE)
@@ -227,13 +402,79 @@ async def edit_age(message: Message, session: AsyncSession, state: FSMContext):
     
     await crud.update_user(session, message.from_user.id, age=age)
     await state.clear()
-    await message.answer("✅ Возраст обновлён!")
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    try:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=resume_message_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
+    except Exception:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=user.photo_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
 
 
 @router.message(WorkerEditStates.editing_city)
-async def edit_city(message: Message, session: AsyncSession, state: FSMContext):
+async def edit_city(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование города"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_EMPTY_TEXT)
@@ -241,29 +482,162 @@ async def edit_city(message: Message, session: AsyncSession, state: FSMContext):
     
     await crud.update_user(session, message.from_user.id, city=message.text.strip())
     await state.clear()
-    await message.answer("✅ Город обновлён!")
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    try:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=resume_message_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
+    except Exception:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=user.photo_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
 
 
-@router.message(WorkerEditStates.editing_location, F.location)
-async def edit_location(message: Message, session: AsyncSession, state: FSMContext):
+@router.message(WorkerEditStates.editing_location)
+async def edit_location(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование геопозиции"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
+    if not message.location:
+        await message.answer("Пожалуйста, отправьте геолокацию или нажмите 'Отмена'", reply_markup=ReplyKeyboardRemove())
+        return
+    
     await crud.update_user(
         session, message.from_user.id,
         latitude=message.location.latitude,
         longitude=message.location.longitude
     )
     await state.clear()
-    await message.answer(
-        "✅ Геопозиция обновлена!",
-        reply_markup=ReplyKeyboardRemove()
-    )
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    try:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=resume_message_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
+    except Exception:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=user.photo_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
 
 
 @router.message(WorkerEditStates.editing_resume)
-async def edit_resume_text(message: Message, session: AsyncSession, state: FSMContext):
+async def edit_resume_text(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование текста резюме"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
     is_valid, error = validate_resume_length(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_RESUME_TOO_LONG.format(length=len(message.text or "")))
@@ -271,18 +645,110 @@ async def edit_resume_text(message: Message, session: AsyncSession, state: FSMCo
     
     await crud.update_user(session, message.from_user.id, resume=message.text.strip())
     await state.clear()
-    await message.answer("✅ Резюме обновлено!")
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    try:
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=resume_message_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
+    except Exception:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=user.photo_id,
+            caption=resume_preview,
+            reply_markup=get_resume_edit_keyboard()
+        )
 
 
-@router.message(WorkerEditStates.editing_photo, F.photo)
-async def edit_photo(message: Message, session: AsyncSession, state: FSMContext):
+@router.message(WorkerEditStates.editing_photo)
+async def edit_photo(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Редактирование фото"""
+    data = await state.get_data()
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
+    if not message.photo:
+        await message.answer("Пожалуйста, отправьте фото или нажмите 'Отмена'")
+        return
+    
     photo_id = message.photo[-1].file_id
     await crud.update_user(session, message.from_user.id, photo_id=photo_id)
     await state.clear()
-    await message.answer("✅ Фото обновлено!")
-    await message.answer(texts.WORKER_MENU, reply_markup=get_worker_menu())
+    
+    user = await crud.get_user(session, message.from_user.id)
+    resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+    
+    # Для фото нужно удалить старое сообщение и отправить новое с обновленным фото
+    try:
+        await message.delete()
+        await bot.delete_message(chat_id=message.chat.id, message_id=resume_message_id)
+    except Exception:
+        pass
+    
+    await bot.send_photo(
+        chat_id=message.from_user.id,
+        photo=user.photo_id,
+        caption=resume_preview,
+        reply_markup=get_resume_edit_keyboard()
+    )
 
 
 @router.callback_query(F.data == "cancel_edit")
@@ -300,10 +766,24 @@ async def show_worker_menu(callback: CallbackQuery, state: FSMContext):
     """Показ меню работника"""
     await state.clear()
     await callback.answer()
-    await callback.message.edit_text(
-        texts.WORKER_MENU,
-        reply_markup=get_worker_menu()
-    )
+    
+    # Проверяем, есть ли фото в сообщении
+    if callback.message.photo:
+        try:
+            # Удаляем сообщение с фото
+            await callback.message.delete()
+        except Exception:
+            pass
+        # Отправляем новое текстовое сообщение
+        await callback.message.answer(
+            texts.WORKER_MENU,
+            reply_markup=get_worker_menu()
+        )
+    else:
+        await callback.message.edit_text(
+            texts.WORKER_MENU,
+            reply_markup=get_worker_menu()
+        )
 
 
 # ============== Просмотр вакансий ==============
