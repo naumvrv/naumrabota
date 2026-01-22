@@ -1,12 +1,16 @@
 """Сервис платежей ЮKassa"""
 
 import uuid
-from typing import Optional
+import logging
+from typing import Optional, Dict
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
+from yookassa import Payment, Configuration
 
 from bot.config import config
 from bot.database import crud
+
+logger = logging.getLogger(__name__)
 
 
 # Типы платежей
@@ -70,6 +74,102 @@ def parse_payment_payload(payload: str) -> dict:
     if len(parts) == 4:
         result["vacancy_id"] = int(parts[2])
     return result
+
+
+async def create_yookassa_payment(
+    payment_type: str,
+    user_id: int,
+    amount: int,
+    vacancy_id: Optional[int] = None,
+    session: Optional[AsyncSession] = None
+) -> Dict[str, any]:
+    """
+    Создает платеж через ЮKassa API
+    
+    Args:
+        payment_type: Тип платежа
+        user_id: ID пользователя Telegram
+        amount: Сумма в рублях
+        vacancy_id: ID вакансии (опционально)
+        session: Сессия БД (опционально, если None - создается новая)
+    
+    Returns:
+        {
+            'payment_id': str,  # ID платежа ЮKassa
+            'confirmation_url': str,  # Ссылка для оплаты
+            'db_payment_id': int  # ID записи в БД
+        }
+    """
+    # Инициализация ЮKassa
+    Configuration.account_id = config.payment.shop_id
+    Configuration.secret_key = config.payment.secret_key
+    
+    # Подготовка metadata
+    metadata = {
+        "telegram_id": str(user_id),
+        "payment_type": payment_type,
+    }
+    if vacancy_id:
+        metadata["vacancy_id"] = str(vacancy_id)
+    
+    # Описание платежа
+    description = get_payment_description(payment_type)
+    
+    # Создание платежа через ЮKassa API
+    payment_data = {
+        "amount": {
+            "value": f"{amount:.2f}",
+            "currency": "RUB"
+        },
+        "confirmation": {
+            "type": "redirect",
+            "return_url": config.payment.return_url
+        },
+        "capture": True,
+        "description": description,
+        "metadata": metadata
+    }
+    
+    try:
+        payment = Payment.create(payment_data)
+        yookassa_id = payment.id
+        confirmation_url = payment.confirmation.confirmation_url
+        
+        # Сохранение в БД
+        if session:
+            db_payment = await crud.create_payment(
+                session=session,
+                user_id=user_id,
+                payment_type=payment_type,
+                amount=amount,
+                vacancy_id=vacancy_id,
+                yookassa_id=yookassa_id
+            )
+            db_payment_id = db_payment.id
+        else:
+            # Если сессия не передана, создаем новую
+            from bot.database.connection import async_session_maker
+            async with async_session_maker() as new_session:
+                db_payment = await crud.create_payment(
+                    session=new_session,
+                    user_id=user_id,
+                    payment_type=payment_type,
+                    amount=amount,
+                    vacancy_id=vacancy_id,
+                    yookassa_id=yookassa_id
+                )
+                db_payment_id = db_payment.id
+        
+        logger.info(f"Created YooKassa payment {yookassa_id} for user {user_id}, type {payment_type}")
+        
+        return {
+            'payment_id': yookassa_id,
+            'confirmation_url': confirmation_url,
+            'db_payment_id': db_payment_id
+        }
+    except Exception as e:
+        logger.error(f"Error creating YooKassa payment: {e}", exc_info=True)
+        raise
 
 
 async def process_successful_payment(

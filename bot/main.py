@@ -66,7 +66,6 @@ async def main():
     # Регистрация middleware
     dp.message.middleware(DatabaseMiddleware())
     dp.callback_query.middleware(DatabaseMiddleware())
-    dp.pre_checkout_query.middleware(DatabaseMiddleware())
     
     # Регистрация роутеров
     dp.include_router(start_router)
@@ -90,4 +89,12 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == 'webhook':
+        # Запуск только webhook сервера
+        from bot.webhook import app
+        import uvicorn
+        logger.info("Запуск webhook сервера...")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    else:
+        # Запуск бота
+        asyncio.run(main())

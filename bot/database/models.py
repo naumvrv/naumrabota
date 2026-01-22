@@ -2,7 +2,7 @@
 
 from datetime import datetime, date
 from typing import Optional
-from sqlalchemy import BigInteger, String, Text, Float, Integer, Boolean, DateTime, Date, ForeignKey
+from sqlalchemy import BigInteger, String, Text, Float, Integer, Boolean, DateTime, Date, ForeignKey, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -117,8 +117,9 @@ class Payment(Base):
     
     payment_type: Mapped[str] = mapped_column(String(50))  # worker_subscription, vacancy_publication, etc.
     amount: Mapped[int] = mapped_column(Integer)  # в рублях
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, completed, refunded
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, succeeded, canceled
     provider_payment_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    yookassa_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, unique=True, index=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     

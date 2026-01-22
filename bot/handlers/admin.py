@@ -138,15 +138,21 @@ async def exit_admin(callback: CallbackQuery, session: AsyncSession, state: FSMC
     await callback.answer("Выход из админ-панели")
     
     if user and user.role == "worker":
-        await callback.message.edit_text(
-            texts.WORKER_MENU,
-            reply_markup=get_worker_menu()
-        )
+        try:
+            await callback.message.edit_text(
+                texts.WORKER_MENU,
+                reply_markup=get_worker_menu()
+            )
+        except Exception:
+            pass
     else:
-        await callback.message.edit_text(
-            texts.EMPLOYER_MENU,
-            reply_markup=get_employer_menu()
-        )
+        try:
+            await callback.message.edit_text(
+                texts.EMPLOYER_MENU,
+                reply_markup=get_employer_menu()
+            )
+        except Exception:
+            pass
 
 
 # ============== Статистика ==============

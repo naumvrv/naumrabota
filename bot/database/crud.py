@@ -257,7 +257,8 @@ async def create_payment(
     payment_type: str,
     amount: int,
     vacancy_id: Optional[int] = None,
-    provider_payment_id: Optional[str] = None
+    provider_payment_id: Optional[str] = None,
+    yookassa_id: Optional[str] = None
 ) -> Payment:
     """Создание записи о платеже"""
     payment = Payment(
@@ -266,6 +267,7 @@ async def create_payment(
         payment_type=payment_type,
         amount=amount,
         provider_payment_id=provider_payment_id,
+        yookassa_id=yookassa_id,
         status="pending"
     )
     session.add(payment)
@@ -275,13 +277,31 @@ async def create_payment(
 
 
 async def confirm_payment(session: AsyncSession, payment_id: int) -> Optional[Payment]:
-    """Подтверждение платежа"""
+    """Подтверждение платежа (устаревший метод, используйте mark_payment_succeeded)"""
+    return await mark_payment_succeeded(session, payment_id)
+
+
+async def mark_payment_succeeded(session: AsyncSession, payment_id: int) -> Optional[Payment]:
+    """Отметить платеж как успешный"""
     result = await session.execute(
         select(Payment).where(Payment.id == payment_id)
     )
     payment = result.scalar_one_or_none()
     if payment:
-        payment.status = "completed"
+        payment.status = "succeeded"
+        await session.commit()
+        await session.refresh(payment)
+    return payment
+
+
+async def mark_payment_canceled(session: AsyncSession, payment_id: int) -> Optional[Payment]:
+    """Отметить платеж как отмененный"""
+    result = await session.execute(
+        select(Payment).where(Payment.id == payment_id)
+    )
+    payment = result.scalar_one_or_none()
+    if payment:
+        payment.status = "canceled"
         await session.commit()
         await session.refresh(payment)
     return payment
@@ -295,6 +315,14 @@ async def get_payment_by_provider_id(session: AsyncSession, provider_payment_id:
     return result.scalar_one_or_none()
 
 
+async def get_payment_by_yookassa_id(session: AsyncSession, yookassa_id: str) -> Optional[Payment]:
+    """Получение платежа по ID ЮKassa"""
+    result = await session.execute(
+        select(Payment).where(Payment.yookassa_id == yookassa_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_payments_sum(
     session: AsyncSession,
     from_date: Optional[datetime] = None,
@@ -302,7 +330,7 @@ async def get_payments_sum(
 ) -> int:
     """Получение суммы платежей за период"""
     query = select(func.coalesce(func.sum(Payment.amount), 0)).where(
-        Payment.status == "completed"
+        Payment.status == "succeeded"
     )
     if from_date:
         query = query.where(Payment.created_at >= from_date)

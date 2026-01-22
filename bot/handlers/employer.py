@@ -45,10 +45,14 @@ async def show_employer_menu(callback: CallbackQuery, state: FSMContext):
             reply_markup=get_employer_menu()
         )
     else:
-        await callback.message.edit_text(
-            texts.EMPLOYER_MENU,
-            reply_markup=get_employer_menu()
-        )
+        try:
+            await callback.message.edit_text(
+                texts.EMPLOYER_MENU,
+                reply_markup=get_employer_menu()
+            )
+        except Exception:
+            # Игнорируем ошибку если сообщение уже такое же
+            pass
 
 
 # ============== FSM: Создание вакансии ==============
@@ -81,13 +85,19 @@ async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, s
             await state.set_state(EmployerStates.waiting_for_title)
     else:
         if not has_free:
-            await callback.message.edit_text(
-                texts.VACANCY_LIMIT_REACHED,
-                reply_markup=get_vacancy_limit_keyboard()
-            )
+            try:
+                await callback.message.edit_text(
+                    texts.VACANCY_LIMIT_REACHED,
+                    reply_markup=get_vacancy_limit_keyboard()
+                )
+            except Exception:
+                pass
             await state.update_data(need_payment=True)
         else:
-            await callback.message.edit_text(texts.EMPLOYER_VACANCY_START)
+            try:
+                await callback.message.edit_text(texts.EMPLOYER_VACANCY_START)
+            except Exception:
+                pass
             await state.set_state(EmployerStates.waiting_for_title)
 
 
@@ -177,6 +187,21 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
     photo_id = message.photo[-1].file_id
     data = await state.get_data()
     
+    # Проверка оплаты публикации вакансии
+    is_paid = False
+    if data.get("pending_vacancy_payment"):
+        payment_id = data.get("pending_payment_id")
+        if payment_id:
+            # Проверяем статус платежа в БД
+            from bot.database.models import Payment
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Payment).where(Payment.id == payment_id)
+            )
+            payment = result.scalar_one_or_none()
+            if payment and payment.status == "succeeded":
+                is_paid = True
+    
     # Создаем вакансию
     vacancy = await crud.create_vacancy(
         session,
@@ -190,8 +215,8 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
         photo_id=photo_id,
     )
     
-    # Уменьшаем счетчик бесплатных вакансий
-    if not data.get("is_paid"):
+    # Уменьшаем счетчик бесплатных вакансий только если не было оплаты
+    if not is_paid:
         await crud.decrement_free_vacancies(session, message.from_user.id)
     
     await state.clear()
@@ -234,15 +259,23 @@ async def show_my_vacancies(callback: CallbackQuery, session: AsyncSession):
             )
     else:
         if not vacancies:
-            await callback.message.edit_text(
-                texts.MY_VACANCIES_EMPTY,
-                reply_markup=get_employer_menu()
-            )
+            try:
+                await callback.message.edit_text(
+                    texts.MY_VACANCIES_EMPTY,
+                    reply_markup=get_employer_menu()
+                )
+            except Exception:
+                # Игнорируем ошибку если сообщение уже такое же
+                pass
         else:
-            await callback.message.edit_text(
-                "📄 Ваши вакансии:",
-                reply_markup=get_my_vacancies_keyboard(vacancies)
-            )
+            try:
+                await callback.message.edit_text(
+                    "📄 Ваши вакансии:",
+                    reply_markup=get_my_vacancies_keyboard(vacancies)
+                )
+            except Exception:
+                # Игнорируем ошибку если сообщение уже такое же
+                pass
 
 
 async def show_vacancy_details_helper(bot: Bot, user_id: int, vacancy):
@@ -380,10 +413,21 @@ async def boost_vacancy(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text=texts.BTN_CANCEL, callback_data=f"vacancy:{vacancy_id}")],
     ])
     
-    await callback.message.edit_caption(
-        caption=texts.BOOST_CONFIRM,
-        reply_markup=keyboard
-    )
+    try:
+        await callback.message.edit_caption(
+            caption=texts.BOOST_CONFIRM,
+            reply_markup=keyboard
+        )
+    except Exception:
+        # Если не получается отредактировать caption, пробуем текст
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            texts.BOOST_CONFIRM,
+            reply_markup=keyboard
+        )
 
 
 @router.callback_query(F.data.startswith("pin_vacancy:"))
@@ -728,10 +772,14 @@ async def show_paid_services(callback: CallbackQuery):
             reply_markup=get_paid_services_keyboard()
         )
     else:
-        await callback.message.edit_text(
-            texts.PAID_SERVICES,
-            reply_markup=get_paid_services_keyboard()
-        )
+        try:
+            await callback.message.edit_text(
+                texts.PAID_SERVICES,
+                reply_markup=get_paid_services_keyboard()
+            )
+        except Exception:
+            # Игнорируем ошибку если сообщение уже такое же
+            pass
 
 
 @router.callback_query(F.data == "employer:my_payments")
@@ -747,7 +795,7 @@ async def show_my_payments(callback: CallbackQuery, session: AsyncSession):
     else:
         text = "📋 История покупок:\n\n"
         for payment in payments[:20]:  # Последние 20
-            status = "✅ Оплачено" if payment.is_confirmed else "⏳ Ожидает"
+            status = "✅ Оплачено" if payment.status == "succeeded" else "⏳ Ожидает"
             date_str = payment.created_at.strftime("%d.%m.%Y %H:%M")
             
             payment_type_names = {
@@ -770,4 +818,8 @@ async def show_my_payments(callback: CallbackQuery, session: AsyncSession):
             pass
         await callback.message.answer(text, reply_markup=get_paid_services_keyboard())
     else:
-        await callback.message.edit_text(text, reply_markup=get_paid_services_keyboard())
+        try:
+            await callback.message.edit_text(text, reply_markup=get_paid_services_keyboard())
+        except Exception:
+            # Игнорируем ошибку если сообщение уже такое же
+            pass

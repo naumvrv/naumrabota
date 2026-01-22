@@ -19,6 +19,8 @@ class DatabaseConfig:
 class PaymentConfig:
     shop_id: str
     secret_key: str
+    return_url: str
+    webhook_path: str = "/yookassa/webhook"
 
 
 @dataclass
@@ -76,6 +78,7 @@ def load_config() -> Config:
         payment=PaymentConfig(
             shop_id=os.getenv("YOOKASSA_SHOP_ID", ""),
             secret_key=os.getenv("YOOKASSA_SECRET_KEY", ""),
+            return_url=os.getenv("YOOKASSA_RETURN_URL", ""),
         ),
         admin=AdminConfig(
             admin_id=int(os.getenv("ADMIN_ID", "411655143")),
