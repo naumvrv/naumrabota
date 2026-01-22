@@ -19,6 +19,7 @@ from bot.keyboards.employer import (
 )
 from bot.utils import texts
 from bot.utils.validators import validate_description_length, validate_not_empty
+from bot.utils.message_manager import MessageManager
 from bot.services.geocoding import geocode_address
 from bot.states.employer_states import EmployerStates, EmployerEditStates
 from bot.services.limits import check_vacancy_limit
@@ -30,10 +31,14 @@ router = Router(name="employer")
 # ============== Меню работодателя ==============
 
 @router.callback_query(F.data == "employer:menu")
-async def show_employer_menu(callback: CallbackQuery, state: FSMContext):
+async def show_employer_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Показ меню работодателя"""
     await state.clear()
+    await MessageManager.clear_all(state)
     await callback.answer()
+    
+    # Очищаем старые сообщения перед отправкой меню
+    await MessageManager.cleanup_old_messages(bot, callback.message.chat.id, state)
     
     # Если предыдущее сообщение было с фото, удаляем его и отправляем новое
     if callback.message.photo:
@@ -52,14 +57,17 @@ async def show_employer_menu(callback: CallbackQuery, state: FSMContext):
                 reply_markup=get_employer_menu()
             )
         except Exception:
-            # Игнорируем ошибку если сообщение уже такое же
-            pass
+            # Если не получилось отредактировать, отправляем новое сообщение
+            await callback.message.answer(
+                texts.EMPLOYER_MENU,
+                reply_markup=get_employer_menu()
+            )
 
 
 # ============== FSM: Создание вакансии ==============
 
 @router.callback_query(F.data == "employer:create_vacancy")
-async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot):
     """Начало создания вакансии"""
     user_id = callback.from_user.id
     
@@ -67,6 +75,9 @@ async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, s
     has_free, remaining = await check_vacancy_limit(session, user_id)
     
     await callback.answer()
+    
+    # Очищаем старые сообщения перед началом создания вакансии
+    await MessageManager.cleanup_old_messages(bot, callback.message.chat.id, state)
     
     # Если предыдущее сообщение было с фото, удаляем его
     if callback.message.photo:
@@ -82,7 +93,16 @@ async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, s
             )
             await state.update_data(need_payment=True)
         else:
-            await callback.message.answer(texts.EMPLOYER_VACANCY_START)
+            from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+            cancel_keyboard = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+            await callback.message.answer(
+                texts.EMPLOYER_VACANCY_START,
+                reply_markup=cancel_keyboard
+            )
             await state.set_state(EmployerStates.waiting_for_title)
     else:
         if not has_free:
@@ -95,35 +115,92 @@ async def start_create_vacancy(callback: CallbackQuery, session: AsyncSession, s
                 pass
             await state.update_data(need_payment=True)
         else:
+            from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+            cancel_keyboard = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
             try:
-                await callback.message.edit_text(texts.EMPLOYER_VACANCY_START)
+                await callback.message.edit_text(
+                    texts.EMPLOYER_VACANCY_START,
+                    reply_markup=cancel_keyboard
+                )
             except Exception:
-                pass
+                # Если не получилось отредактировать, отправляем новое сообщение
+                await callback.message.answer(
+                    texts.EMPLOYER_VACANCY_START,
+                    reply_markup=cancel_keyboard
+                )
             await state.set_state(EmployerStates.waiting_for_title)
 
 
 @router.message(EmployerStates.waiting_for_title)
-async def process_vacancy_title(message: Message, state: FSMContext):
+async def process_vacancy_title(message: Message, state: FSMContext, bot: Bot):
     """Обработка названия вакансии"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
+        return
+    
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_EMPTY_TEXT)
         return
     
     await state.update_data(title=message.text.strip())
-    await message.answer(texts.EMPLOYER_VACANCY_CITY)
+    # Очищаем старые сообщения перед переходом к следующему шагу
+    await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    cancel_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await message.answer(texts.EMPLOYER_VACANCY_CITY, reply_markup=cancel_keyboard)
     await state.set_state(EmployerStates.waiting_for_city)
 
 
 @router.message(EmployerStates.waiting_for_city)
-async def process_vacancy_city(message: Message, state: FSMContext):
+async def process_vacancy_city(message: Message, state: FSMContext, bot: Bot):
     """Обработка города вакансии"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
+        return
+    
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_EMPTY_TEXT)
         return
     
     await state.update_data(city=message.text.strip())
+    # Очищаем старые сообщения перед переходом к следующему шагу
+    await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
     await message.answer(
         texts.EMPLOYER_VACANCY_LOCATION,
         reply_markup=get_location_method_keyboard()
@@ -132,19 +209,36 @@ async def process_vacancy_city(message: Message, state: FSMContext):
 
 
 @router.message(EmployerStates.waiting_for_location_method)
-async def process_vacancy_location_method(message: Message, state: FSMContext):
+async def process_vacancy_location_method(message: Message, state: FSMContext, bot: Bot):
     """Обработка выбора способа указания местоположения вакансии"""
     # Проверка на отмену
     if message.text and message.text.strip() == "❌ Отмена":
         await state.clear()
-        await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
         return
     
     # Если нажата кнопка ввода адреса
     if message.text and texts.BTN_ENTER_ADDRESS in message.text:
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        cancel_keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
         await message.answer(
             texts.LOCATION_ADDRESS_INPUT,
-            reply_markup=ReplyKeyboardRemove()
+            reply_markup=cancel_keyboard
         )
         await state.set_state(EmployerStates.waiting_for_address)
         return
@@ -204,7 +298,7 @@ async def process_vacancy_location_method(message: Message, state: FSMContext):
 
 
 @router.message(EmployerStates.waiting_for_address)
-async def process_vacancy_address(message: Message, session: AsyncSession, state: FSMContext):
+async def process_vacancy_address(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     """Обработка ввода адреса для вакансии"""
     data = await state.get_data()
     is_editing = data.get("editing_location", False)
@@ -213,14 +307,30 @@ async def process_vacancy_address(message: Message, session: AsyncSession, state
     # Проверка на отмену
     if message.text and message.text.strip() == "❌ Отмена":
         await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
         if is_editing:
-            await message.answer("Редактирование отменено", reply_markup=ReplyKeyboardRemove())
-            await message.answer(
+            cancel_msg = await message.answer("Редактирование отменено", reply_markup=ReplyKeyboardRemove())
+            edit_menu_msg = await message.answer(
                 "✏️ Выберите что изменить:",
                 reply_markup=get_vacancy_edit_keyboard(vacancy_id)
             )
+            # Удаляем сообщение об отмене после отправки меню редактирования
+            try:
+                await cancel_msg.delete()
+            except Exception:
+                pass
         else:
-            await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+            cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+            menu_msg = await message.answer(
+                texts.EMPLOYER_MENU,
+                reply_markup=get_employer_menu()
+            )
+            # Удаляем сообщение об отмене после отправки меню
+            try:
+                await cancel_msg.delete()
+            except Exception:
+                pass
         return
     
     if not message.text or not message.text.strip():
@@ -270,31 +380,47 @@ async def process_vacancy_address(message: Message, session: AsyncSession, state
     else:
         # Создание вакансии
         await state.update_data(latitude=lat, longitude=lon)
+        # Очищаем старые сообщения перед переходом к следующему шагу
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
         await message.answer(
             texts.LOCATION_SAVED,
             reply_markup=ReplyKeyboardRemove()
         )
+        from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+        cancel_keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
         await message.answer(
             texts.EMPLOYER_VACANCY_SALARY,
-            reply_markup=ReplyKeyboardRemove()
+            reply_markup=cancel_keyboard
         )
         await state.set_state(EmployerStates.waiting_for_salary)
 
 
 @router.message(EmployerStates.waiting_for_location, F.location)
-async def process_vacancy_location(message: Message, state: FSMContext):
+async def process_vacancy_location(message: Message, state: FSMContext, bot: Bot):
     """Обработка геопозиции вакансии (для обратной совместимости)"""
     await state.update_data(
         latitude=message.location.latitude,
         longitude=message.location.longitude
     )
+    # Очищаем старые сообщения перед переходом к следующему шагу
+    await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
     await message.answer(
         texts.LOCATION_SAVED,
         reply_markup=ReplyKeyboardRemove()
     )
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    cancel_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
     await message.answer(
         texts.EMPLOYER_VACANCY_SALARY,
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=cancel_keyboard
     )
     await state.set_state(EmployerStates.waiting_for_salary)
 
@@ -309,21 +435,63 @@ async def process_vacancy_location_invalid(message: Message):
 
 
 @router.message(EmployerStates.waiting_for_salary)
-async def process_vacancy_salary(message: Message, state: FSMContext):
+async def process_vacancy_salary(message: Message, state: FSMContext, bot: Bot):
     """Обработка зарплаты"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
+        return
+    
     is_valid, error = validate_not_empty(message.text or "")
     if not is_valid:
         await message.answer(texts.ERROR_EMPTY_TEXT)
         return
     
     await state.update_data(salary=message.text.strip())
-    await message.answer(texts.EMPLOYER_VACANCY_DESCRIPTION)
+    # Очищаем старые сообщения перед переходом к следующему шагу
+    await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    cancel_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await message.answer(texts.EMPLOYER_VACANCY_DESCRIPTION, reply_markup=cancel_keyboard)
     await state.set_state(EmployerStates.waiting_for_description)
 
 
 @router.message(EmployerStates.waiting_for_description)
-async def process_vacancy_description(message: Message, state: FSMContext):
+async def process_vacancy_description(message: Message, state: FSMContext, bot: Bot):
     """Обработка описания"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
+        return
+    
     is_valid, error = validate_description_length(message.text or "")
     if not is_valid:
         await message.answer(
@@ -332,7 +500,15 @@ async def process_vacancy_description(message: Message, state: FSMContext):
         return
     
     await state.update_data(description=message.text.strip())
-    await message.answer(texts.EMPLOYER_VACANCY_PHOTO)
+    # Очищаем старые сообщения перед переходом к следующему шагу
+    await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    cancel_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await message.answer(texts.EMPLOYER_VACANCY_PHOTO, reply_markup=cancel_keyboard)
     await state.set_state(EmployerStates.waiting_for_photo)
 
 
@@ -407,8 +583,24 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
 
 
 @router.message(EmployerStates.waiting_for_photo)
-async def process_vacancy_photo_invalid(message: Message):
+async def process_vacancy_photo_invalid(message: Message, state: FSMContext, bot: Bot):
     """Некорректное фото"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        # Очищаем старые сообщения перед отправкой меню
+        await MessageManager.cleanup_old_messages(bot, message.chat.id, state)
+        cancel_msg = await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        menu_msg = await message.answer(
+            texts.EMPLOYER_MENU,
+            reply_markup=get_employer_menu()
+        )
+        # Удаляем сообщение об отмене после отправки меню
+        try:
+            await cancel_msg.delete()
+        except Exception:
+            pass
+        return
     await message.answer(texts.ERROR_NOT_PHOTO)
 
 

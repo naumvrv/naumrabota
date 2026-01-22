@@ -11,6 +11,7 @@ from bot.keyboards.common import get_role_selection_keyboard
 from bot.keyboards.worker import get_worker_menu
 from bot.keyboards.employer import get_employer_menu
 from bot.utils import texts
+from bot.utils.message_manager import MessageManager
 from bot.states.worker_states import WorkerStates
 
 router = Router(name="start")
@@ -19,8 +20,9 @@ router = Router(name="start")
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession, state: FSMContext):
     """Обработка команды /start"""
-    # Очистка состояния
+    # Очистка состояния и истории сообщений
     await state.clear()
+    await MessageManager.clear_all(state)
     
     user_id = message.from_user.id
     user, is_new = await crud.get_or_create_user(session, user_id)
@@ -44,6 +46,7 @@ async def cmd_start(message: Message, session: AsyncSession, state: FSMContext):
 async def show_menu_by_role(message: Message, role: str, state: FSMContext):
     """Показ меню в зависимости от роли"""
     await state.clear()
+    await MessageManager.clear_all(state)
     
     if role == "worker":
         await message.answer(
@@ -64,6 +67,9 @@ async def process_role_selection(callback: CallbackQuery, session: AsyncSession,
     user_id = callback.from_user.id
     
     await crud.update_user(session, user_id, role=role)
+    
+    # Очистка истории сообщений при смене роли
+    await MessageManager.clear_all(state)
     
     await callback.answer()
     
@@ -90,6 +96,7 @@ async def process_role_selection(callback: CallbackQuery, session: AsyncSession,
 async def process_change_role(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     """Обработка смены роли"""
     await state.clear()
+    await MessageManager.clear_all(state)
     await callback.answer()
     
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -151,10 +158,20 @@ async def process_support(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
     from bot.config import config
     from bot.keyboards.common import get_menu_keyboard
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    # Создаем клавиатуру с кнопкой для связи с администратором
+    support_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="💬 Написать администратору",
+            url=f"tg://user?id={config.admin.admin_id}"
+        )],
+        [InlineKeyboardButton(text=texts.BTN_MENU, callback_data="menu")]
+    ])
     
     await callback.message.answer(
         texts.SUPPORT_MESSAGE.format(email=config.admin.support_email),
-        reply_markup=get_menu_keyboard()
+        reply_markup=support_keyboard
     )
 
 
@@ -162,6 +179,7 @@ async def process_support(callback: CallbackQuery, session: AsyncSession):
 async def process_cancel(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     """Обработка отмены"""
     await state.clear()
+    await MessageManager.clear_all(state)
     user = await crud.get_user(session, callback.from_user.id)
     await callback.answer("Действие отменено")
     

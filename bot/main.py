@@ -17,6 +17,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import config
 from bot.database.connection import init_db, close_db
 from bot.middlewares.db_middleware import DatabaseMiddleware
+from bot.middlewares.message_cleanup_middleware import MessageCleanupMiddleware
 from bot.handlers import (
     start_router,
     worker_router,
@@ -66,6 +67,8 @@ async def main():
     # Регистрация middleware
     dp.message.middleware(DatabaseMiddleware())
     dp.callback_query.middleware(DatabaseMiddleware())
+    dp.message.middleware(MessageCleanupMiddleware())
+    dp.callback_query.middleware(MessageCleanupMiddleware())
     
     # Регистрация роутеров
     dp.include_router(start_router)

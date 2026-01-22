@@ -19,6 +19,7 @@ from bot.keyboards.worker import (
 )
 from bot.utils import texts
 from bot.utils.validators import validate_age, validate_resume_length, validate_not_empty
+from bot.utils.message_manager import MessageManager
 from bot.states.worker_states import WorkerStates, WorkerEditStates
 from bot.services.geo import get_nearby_vacancies, calculate_distance
 from bot.services.geocoding import geocode_address
@@ -1146,21 +1147,22 @@ async def start_viewing_vacancies(callback: CallbackQuery, session: AsyncSession
     # Сброс индекса
     await crud.update_user(session, user.telegram_id, current_index=0)
     
-    await show_next_vacancy(callback.message, session, user.telegram_id, edit=True)
+    await show_next_vacancy(callback.message, session, user.telegram_id, edit=True, state=state)
 
 
 @router.callback_query(F.data == "next_vacancy")
-async def next_vacancy(callback: CallbackQuery, session: AsyncSession):
+async def next_vacancy(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     """Показ следующей вакансии"""
     await callback.answer()
-    await show_next_vacancy(callback.message, session, callback.from_user.id, edit=True)
+    await show_next_vacancy(callback.message, session, callback.from_user.id, edit=True, state=state)
 
 
 async def show_next_vacancy(
     message: Message,
     session: AsyncSession,
     user_id: int,
-    edit: bool = False
+    edit: bool = False,
+    state: FSMContext = None
 ):
     """Показ следующей подходящей вакансии"""
     user = await crud.get_user(session, user_id)
@@ -1248,17 +1250,21 @@ async def show_next_vacancy(
     except Exception:
         pass
     
-    await message.answer_photo(
+    sent_message = await message.answer_photo(
         photo=vacancy.photo_id,
         caption=vacancy_text,
         reply_markup=get_vacancy_buttons(vacancy.id)
     )
+    
+    # Явно помечаем сообщение как вакансию (не удалять)
+    if state:
+        await MessageManager.mark_vacancy_message(state, sent_message.message_id)
 
 
 # ============== Отклик на вакансию ==============
 
 @router.callback_query(F.data.startswith("respond:"))
-async def respond_to_vacancy(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+async def respond_to_vacancy(callback: CallbackQuery, session: AsyncSession, bot: Bot, state: FSMContext):
     """Отклик на вакансию"""
     vacancy_id = int(callback.data.split(":")[1])
     user = await crud.get_user(session, callback.from_user.id)
@@ -1310,10 +1316,14 @@ async def respond_to_vacancy(callback: CallbackQuery, session: AsyncSession, bot
         pass  # Работодатель мог заблокировать бота
     
     # Уведомляем работника
-    await callback.message.answer(texts.RESPONSE_SENT)
+    response_sent_message = await callback.message.answer(texts.RESPONSE_SENT)
+    
+    # Помечаем сообщение об отклике как связанное с вакансией (не удалять)
+    if state:
+        await MessageManager.mark_vacancy_message(state, response_sent_message.message_id)
     
     # Показываем следующую вакансию
-    await show_next_vacancy(callback.message, session, callback.from_user.id, edit=False)
+    await show_next_vacancy(callback.message, session, callback.from_user.id, edit=False, state=state)
 
 
 # ============== Подписка ==============
