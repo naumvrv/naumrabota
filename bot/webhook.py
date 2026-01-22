@@ -131,10 +131,12 @@ async def handle_payment_succeeded(payment_obj: dict):
                 )
                 
             elif payment_type == PaymentType.VACANCY_PUBLICATION:
-                # Флаг уже установлен в state, вакансия будет создана после оплаты
+                # Увеличиваем счетчик вакансий работодателя
+                await crud.grant_free_vacancies(session, telegram_id, count=1)
                 await send_notification(
                     telegram_id,
-                    "✅ Оплата прошла успешно!\n\nТеперь вы можете создать вакансию."
+                    "✅ Оплата прошла успешно!\n\nТеперь вы можете создать вакансию.",
+                    reply_markup=get_employer_menu()
                 )
                 
             elif payment_type == PaymentType.VACANCY_BOOST:

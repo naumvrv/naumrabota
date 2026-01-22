@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database import crud
-from bot.keyboards.common import get_location_keyboard
+from bot.keyboards.common import get_location_keyboard, get_location_method_keyboard
 from bot.keyboards.employer import (
     get_employer_menu,
     get_my_vacancies_keyboard,
@@ -19,6 +19,7 @@ from bot.keyboards.employer import (
 )
 from bot.utils import texts
 from bot.utils.validators import validate_description_length, validate_not_empty
+from bot.services.geocoding import geocode_address
 from bot.states.employer_states import EmployerStates, EmployerEditStates
 from bot.services.limits import check_vacancy_limit
 from bot.config import config
@@ -125,17 +126,171 @@ async def process_vacancy_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text.strip())
     await message.answer(
         texts.EMPLOYER_VACANCY_LOCATION,
-        reply_markup=get_location_keyboard()
+        reply_markup=get_location_method_keyboard()
     )
-    await state.set_state(EmployerStates.waiting_for_location)
+    await state.set_state(EmployerStates.waiting_for_location_method)
+
+
+@router.message(EmployerStates.waiting_for_location_method)
+async def process_vacancy_location_method(message: Message, state: FSMContext):
+    """Обработка выбора способа указания местоположения вакансии"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        return
+    
+    # Если нажата кнопка ввода адреса
+    if message.text and texts.BTN_ENTER_ADDRESS in message.text:
+        await message.answer(
+            texts.LOCATION_ADDRESS_INPUT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(EmployerStates.waiting_for_address)
+        return
+    
+    # Если отправлено текущее местоположение
+    if message.location:
+        await state.update_data(
+            latitude=message.location.latitude,
+            longitude=message.location.longitude
+        )
+        await message.answer(
+            texts.LOCATION_SAVED,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(
+            texts.EMPLOYER_VACANCY_SALARY,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(EmployerStates.waiting_for_salary)
+        return
+    
+    # Если данные из Web App
+    if message.web_app_data:
+        try:
+            import json
+            data = json.loads(message.web_app_data.data)
+            lat = float(data.get("lat"))
+            lon = float(data.get("lon"))
+            
+            # Валидация координат
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                raise ValueError("Invalid coordinates")
+            
+            await state.update_data(latitude=lat, longitude=lon)
+            await message.answer(
+                texts.LOCATION_SELECTED_FROM_MAP,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await message.answer(
+                texts.EMPLOYER_VACANCY_SALARY,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await state.set_state(EmployerStates.waiting_for_salary)
+            return
+        except Exception:
+            await message.answer(
+                "❌ Ошибка при обработке данных с карты. Попробуйте еще раз.",
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+    
+    # Если ничего не подошло, показываем ошибку
+    await message.answer(
+        "Пожалуйста, выберите способ указания местоположения или нажмите 'Отмена'",
+        reply_markup=get_location_method_keyboard()
+    )
+
+
+@router.message(EmployerStates.waiting_for_address)
+async def process_vacancy_address(message: Message, session: AsyncSession, state: FSMContext):
+    """Обработка ввода адреса для вакансии"""
+    data = await state.get_data()
+    is_editing = data.get("editing_location", False)
+    vacancy_id = data.get("editing_vacancy_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        if is_editing:
+            await message.answer("Редактирование отменено", reply_markup=ReplyKeyboardRemove())
+            await message.answer(
+                "✏️ Выберите что изменить:",
+                reply_markup=get_vacancy_edit_keyboard(vacancy_id)
+            )
+        else:
+            await message.answer("Создание вакансии отменено", reply_markup=ReplyKeyboardRemove())
+        return
+    
+    if not message.text or not message.text.strip():
+        await message.answer(texts.ERROR_EMPTY_TEXT)
+        return
+    
+    address = message.text.strip()
+    
+    # Показываем индикатор загрузки
+    loading_msg = await message.answer("🔍 Ищу адрес...")
+    
+    # Геокодинг адреса
+    result = await geocode_address(address)
+    
+    # Удаляем сообщение о загрузке
+    try:
+        await loading_msg.delete()
+    except Exception:
+        pass
+    
+    if result is None:
+        await message.answer(
+            texts.LOCATION_ADDRESS_NOT_FOUND,
+            reply_markup=get_location_method_keyboard()
+        )
+        if is_editing:
+            await state.set_state(EmployerEditStates.editing_location)
+        else:
+            await state.set_state(EmployerStates.waiting_for_location_method)
+        return
+    
+    lat, lon = result
+    
+    if is_editing:
+        # Редактирование вакансии
+        await crud.update_vacancy(
+            session, vacancy_id,
+            latitude=lat,
+            longitude=lon
+        )
+        await state.clear()
+        await message.answer(
+            "✅ Геопозиция обновлена!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
+    else:
+        # Создание вакансии
+        await state.update_data(latitude=lat, longitude=lon)
+        await message.answer(
+            texts.LOCATION_SAVED,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(
+            texts.EMPLOYER_VACANCY_SALARY,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(EmployerStates.waiting_for_salary)
 
 
 @router.message(EmployerStates.waiting_for_location, F.location)
 async def process_vacancy_location(message: Message, state: FSMContext):
-    """Обработка геопозиции вакансии"""
+    """Обработка геопозиции вакансии (для обратной совместимости)"""
     await state.update_data(
         latitude=message.location.latitude,
         longitude=message.location.longitude
+    )
+    await message.answer(
+        texts.LOCATION_SAVED,
+        reply_markup=ReplyKeyboardRemove()
     )
     await message.answer(
         texts.EMPLOYER_VACANCY_SALARY,
@@ -149,7 +304,7 @@ async def process_vacancy_location_invalid(message: Message):
     """Некорректная геопозиция"""
     await message.answer(
         texts.ERROR_NOT_LOCATION,
-        reply_markup=get_location_keyboard()
+        reply_markup=get_location_method_keyboard()
     )
 
 
@@ -186,13 +341,16 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
     """Обработка фото вакансии"""
     photo_id = message.photo[-1].file_id
     data = await state.get_data()
+    user_id = message.from_user.id
     
     # Проверка оплаты публикации вакансии
+    # Проверяем как через state, так и через БД (на случай если state потерян)
     is_paid = False
+    
+    # Проверка через state
     if data.get("pending_vacancy_payment"):
         payment_id = data.get("pending_payment_id")
         if payment_id:
-            # Проверяем статус платежа в БД
             from bot.database.models import Payment
             from sqlalchemy import select
             result = await session.execute(
@@ -202,10 +360,32 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
             if payment and payment.status == "succeeded":
                 is_paid = True
     
+    # Если не нашли через state, проверяем в БД за последний час
+    if not is_paid:
+        from bot.database.models import Payment
+        from bot.services.payments import PaymentType
+        from sqlalchemy import select, and_
+        from datetime import datetime, timedelta
+        
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        result = await session.execute(
+            select(Payment).where(
+                and_(
+                    Payment.user_id == user_id,
+                    Payment.payment_type == PaymentType.VACANCY_PUBLICATION,
+                    Payment.status == "succeeded",
+                    Payment.created_at >= one_hour_ago
+                )
+            ).order_by(Payment.created_at.desc())
+        )
+        recent_payment = result.scalar_one_or_none()
+        if recent_payment:
+            is_paid = True
+    
     # Создаем вакансию
     vacancy = await crud.create_vacancy(
         session,
-        employer_id=message.from_user.id,
+        employer_id=user_id,
         title=data.get("title"),
         city=data.get("city"),
         latitude=data.get("latitude"),
@@ -217,7 +397,7 @@ async def process_vacancy_photo(message: Message, session: AsyncSession, state: 
     
     # Уменьшаем счетчик бесплатных вакансий только если не было оплаты
     if not is_paid:
-        await crud.decrement_free_vacancies(session, message.from_user.id)
+        await crud.decrement_free_vacancies(session, user_id)
     
     await state.clear()
     await message.answer(
@@ -494,7 +674,7 @@ async def edit_vacancy_field(callback: CallbackQuery, state: FSMContext):
     from bot.keyboards.employer import get_cancel_edit_vacancy_keyboard
     
     if field == "location":
-        await callback.message.answer(prompt, reply_markup=get_location_keyboard())
+        await callback.message.answer(prompt, reply_markup=get_location_method_keyboard())
         await state.set_state(EmployerEditStates.editing_location)
     elif field == "photo":
         try:
@@ -707,21 +887,105 @@ async def save_edit_location(message: Message, session: AsyncSession, state: FSM
         )
         return
     
-    if not message.location:
-        await message.answer("Пожалуйста, отправьте геолокацию или нажмите 'Отмена'")
+    # Если нажата кнопка ввода адреса
+    if message.text and texts.BTN_ENTER_ADDRESS in message.text:
+        await message.answer(
+            texts.LOCATION_ADDRESS_INPUT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.update_data(editing_location=True)
+        await state.set_state(EmployerStates.waiting_for_address)
         return
     
-    await crud.update_vacancy(
-        session, vacancy_id,
-        latitude=message.location.latitude,
-        longitude=message.location.longitude
-    )
-    await state.clear()
+    # Если отправлено текущее местоположение
+    if message.location:
+        await crud.update_vacancy(
+            session, vacancy_id,
+            latitude=message.location.latitude,
+            longitude=message.location.longitude
+        )
+        await state.clear()
+        await message.answer(
+            "✅ Геопозиция обновлена!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
+        return
+    
+    # Если данные из Web App
+    if message.web_app_data:
+        try:
+            import json
+            web_data = json.loads(message.web_app_data.data)
+            lat = float(web_data.get("lat"))
+            lon = float(web_data.get("lon"))
+            
+            # Валидация координат
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                raise ValueError("Invalid coordinates")
+            
+            await crud.update_vacancy(
+                session, vacancy_id,
+                latitude=lat,
+                longitude=lon
+            )
+            await state.clear()
+            await message.answer(
+                "✅ Геопозиция обновлена!",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
+            return
+        except Exception:
+            await message.answer(
+                "❌ Ошибка при обработке данных с карты. Попробуйте еще раз.",
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+    
+    # Если введен адрес (для редактирования)
+    if message.text and message.text.strip() != "❌ Отмена":
+        address = message.text.strip()
+        
+        # Показываем индикатор загрузки
+        loading_msg = await message.answer("🔍 Ищу адрес...")
+        
+        # Геокодинг адреса
+        result = await geocode_address(address)
+        
+        # Удаляем сообщение о загрузке
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
+        
+        if result is None:
+            await message.answer(
+                texts.LOCATION_ADDRESS_NOT_FOUND,
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+        
+        lat, lon = result
+        
+        await crud.update_vacancy(
+            session, vacancy_id,
+            latitude=lat,
+            longitude=lon
+        )
+        await state.clear()
+        await message.answer(
+            "✅ Геопозиция обновлена!",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
+        return
+    
+    # Если ничего не подошло
     await message.answer(
-        "✅ Геопозиция обновлена!",
-        reply_markup=ReplyKeyboardRemove()
+        "Пожалуйста, выберите способ указания местоположения или нажмите 'Отмена'",
+        reply_markup=get_location_method_keyboard()
     )
-    await message.answer("Меню редактирования:", reply_markup=get_vacancy_edit_keyboard(vacancy_id))
 
 
 @router.message(EmployerEditStates.editing_photo)

@@ -8,7 +8,9 @@ class EmployerStates(StatesGroup):
     
     waiting_for_title = State()
     waiting_for_city = State()
-    waiting_for_location = State()
+    waiting_for_location_method = State()  # Выбор способа указания местоположения
+    waiting_for_location = State()  # Ожидание местоположения (любым способом)
+    waiting_for_address = State()  # Ввод адреса текстом
     waiting_for_salary = State()
     waiting_for_description = State()
     waiting_for_photo = State()

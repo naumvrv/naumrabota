@@ -1,7 +1,8 @@
 """Общие клавиатуры"""
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from bot.utils import texts
+from bot.config import config
 
 
 def get_role_selection_keyboard() -> InlineKeyboardMarkup:
@@ -13,12 +14,41 @@ def get_role_selection_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_location_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура для отправки геолокации"""
+    """Клавиатура для отправки геолокации (старая версия, для обратной совместимости)"""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=texts.BTN_SEND_LOCATION, request_location=True)],
             [KeyboardButton(text="❌ Отмена")],
         ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def get_location_method_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура для выбора способа указания местоположения"""
+    web_app_url = config.geocoding.web_app_url
+    
+    keyboard = []
+    
+    # Кнопка отправки текущего местоположения
+    keyboard.append([KeyboardButton(text=texts.BTN_SEND_LOCATION, request_location=True)])
+    
+    # Кнопка выбора на карте (Web App)
+    if web_app_url:
+        keyboard.append([KeyboardButton(
+            text=texts.BTN_SELECT_ON_MAP,
+            web_app=WebAppInfo(url=web_app_url)
+        )])
+    
+    # Кнопка ввода адреса
+    keyboard.append([KeyboardButton(text=texts.BTN_ENTER_ADDRESS)])
+    
+    # Кнопка отмены
+    keyboard.append([KeyboardButton(text="❌ Отмена")])
+    
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=True,
     )

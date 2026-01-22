@@ -2,6 +2,7 @@
 
 import uuid
 import logging
+import asyncio
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,7 +132,9 @@ async def create_yookassa_payment(
     }
     
     try:
-        payment = Payment.create(payment_data)
+        # Payment.create() - синхронный метод, выполняем в отдельном потоке
+        loop = asyncio.get_event_loop()
+        payment = await loop.run_in_executor(None, Payment.create, payment_data)
         yookassa_id = payment.id
         confirmation_url = payment.confirmation.confirmation_url
         

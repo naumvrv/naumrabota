@@ -9,7 +9,9 @@ class WorkerStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_age = State()
     waiting_for_city = State()
-    waiting_for_location = State()
+    waiting_for_location_method = State()  # Выбор способа указания местоположения
+    waiting_for_location = State()  # Ожидание местоположения (любым способом)
+    waiting_for_address = State()  # Ввод адреса текстом
     waiting_for_resume = State()
     waiting_for_photo = State()
 

@@ -52,6 +52,13 @@ class LimitConfig:
 
 
 @dataclass
+class GeocodingConfig:
+    """Конфигурация геокодинга"""
+    api_key: str = ""  # API ключ Яндекс.Геокодера
+    web_app_url: str = ""  # URL для Telegram Web App выбора местоположения
+
+
+@dataclass
 class Config:
     bot: BotConfig
     db: DatabaseConfig
@@ -59,6 +66,7 @@ class Config:
     admin: AdminConfig
     prices: PriceConfig
     limits: LimitConfig
+    geocoding: GeocodingConfig
 
 
 def load_config() -> Config:
@@ -86,6 +94,10 @@ def load_config() -> Config:
         ),
         prices=PriceConfig(),
         limits=LimitConfig(),
+        geocoding=GeocodingConfig(
+            api_key=os.getenv("YANDEX_GEOCODER_API_KEY", ""),
+            web_app_url=os.getenv("WEB_APP_URL", "https://naumrabota.ru/web_apps/location_picker.html"),
+        ),
     )
 
 

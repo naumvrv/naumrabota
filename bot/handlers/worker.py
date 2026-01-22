@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database import crud
 from bot.database.models import Vacancy
-from bot.keyboards.common import get_location_keyboard
+from bot.keyboards.common import get_location_keyboard, get_location_method_keyboard
 from bot.keyboards.worker import (
     get_worker_menu,
     get_vacancy_buttons,
@@ -21,6 +21,7 @@ from bot.utils import texts
 from bot.utils.validators import validate_age, validate_resume_length, validate_not_empty
 from bot.states.worker_states import WorkerStates, WorkerEditStates
 from bot.services.geo import get_nearby_vacancies, calculate_distance
+from bot.services.geocoding import geocode_address
 from bot.services.limits import check_daily_view_limit
 from bot.config import config
 
@@ -66,17 +67,218 @@ async def process_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text.strip())
     await message.answer(
         texts.WORKER_RESUME_LOCATION,
-        reply_markup=get_location_keyboard()
+        reply_markup=get_location_method_keyboard()
     )
-    await state.set_state(WorkerStates.waiting_for_location)
+    await state.set_state(WorkerStates.waiting_for_location_method)
+
+
+@router.message(WorkerStates.waiting_for_location_method)
+async def process_location_method(message: Message, state: FSMContext):
+    """Обработка выбора способа указания местоположения"""
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        await message.answer("Создание резюме отменено", reply_markup=ReplyKeyboardRemove())
+        return
+    
+    # Если нажата кнопка ввода адреса
+    if message.text and texts.BTN_ENTER_ADDRESS in message.text:
+        await message.answer(
+            texts.LOCATION_ADDRESS_INPUT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(WorkerStates.waiting_for_address)
+        return
+    
+    # Если отправлено текущее местоположение
+    if message.location:
+        await state.update_data(
+            latitude=message.location.latitude,
+            longitude=message.location.longitude
+        )
+        await message.answer(
+            texts.LOCATION_SAVED,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(
+            texts.WORKER_RESUME_TEXT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(WorkerStates.waiting_for_resume)
+        return
+    
+    # Если данные из Web App
+    if message.web_app_data:
+        try:
+            import json
+            data = json.loads(message.web_app_data.data)
+            lat = float(data.get("lat"))
+            lon = float(data.get("lon"))
+            
+            # Валидация координат
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                raise ValueError("Invalid coordinates")
+            
+            await state.update_data(latitude=lat, longitude=lon)
+            await message.answer(
+                texts.LOCATION_SELECTED_FROM_MAP,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await message.answer(
+                texts.WORKER_RESUME_TEXT,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await state.set_state(WorkerStates.waiting_for_resume)
+            return
+        except Exception:
+            await message.answer(
+                "❌ Ошибка при обработке данных с карты. Попробуйте еще раз.",
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+    
+    # Если ничего не подошло, показываем ошибку
+    await message.answer(
+        "Пожалуйста, выберите способ указания местоположения или нажмите 'Отмена'",
+        reply_markup=get_location_method_keyboard()
+    )
+
+
+@router.message(WorkerStates.waiting_for_address)
+async def process_address(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
+    """Обработка ввода адреса"""
+    data = await state.get_data()
+    is_editing = data.get("editing_location", False)
+    resume_message_id = data.get("resume_message_id")
+    
+    # Проверка на отмену
+    if message.text and message.text.strip() == "❌ Отмена":
+        await state.clear()
+        if is_editing:
+            user = await crud.get_user(session, message.from_user.id)
+            resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            try:
+                await bot.edit_message_caption(
+                    chat_id=message.chat.id,
+                    message_id=resume_message_id,
+                    caption=resume_preview,
+                    reply_markup=get_resume_edit_keyboard()
+                )
+            except Exception:
+                await bot.send_photo(
+                    chat_id=message.from_user.id,
+                    photo=user.photo_id,
+                    caption=resume_preview,
+                    reply_markup=get_resume_edit_keyboard()
+                )
+        else:
+            await message.answer("Создание резюме отменено", reply_markup=ReplyKeyboardRemove())
+        return
+    
+    if not message.text or not message.text.strip():
+        await message.answer(texts.ERROR_EMPTY_TEXT)
+        return
+    
+    address = message.text.strip()
+    
+    # Показываем индикатор загрузки
+    loading_msg = await message.answer("🔍 Ищу адрес...")
+    
+    # Геокодинг адреса
+    result = await geocode_address(address)
+    
+    # Удаляем сообщение о загрузке
+    try:
+        await loading_msg.delete()
+    except Exception:
+        pass
+    
+    if result is None:
+        await message.answer(
+            texts.LOCATION_ADDRESS_NOT_FOUND,
+            reply_markup=get_location_method_keyboard()
+        )
+        if is_editing:
+            await state.set_state(WorkerEditStates.editing_location)
+        else:
+            await state.set_state(WorkerStates.waiting_for_location_method)
+        return
+    
+    lat, lon = result
+    
+    if is_editing:
+        # Редактирование резюме
+        await crud.update_user(
+            session, message.from_user.id,
+            latitude=lat,
+            longitude=lon
+        )
+        await state.clear()
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+    else:
+        # Создание резюме
+        await state.update_data(latitude=lat, longitude=lon)
+        await message.answer(
+            texts.LOCATION_SAVED,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(
+            texts.WORKER_RESUME_TEXT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(WorkerStates.waiting_for_resume)
 
 
 @router.message(WorkerStates.waiting_for_location, F.location)
 async def process_location(message: Message, state: FSMContext):
-    """Обработка геопозиции"""
+    """Обработка геопозиции (для обратной совместимости и редактирования)"""
     await state.update_data(
         latitude=message.location.latitude,
         longitude=message.location.longitude
+    )
+    await message.answer(
+        texts.LOCATION_SAVED,
+        reply_markup=ReplyKeyboardRemove()
     )
     await message.answer(
         texts.WORKER_RESUME_TEXT,
@@ -90,7 +292,7 @@ async def process_location_invalid(message: Message):
     """Некорректная геопозиция"""
     await message.answer(
         texts.ERROR_NOT_LOCATION,
-        reply_markup=get_location_keyboard()
+        reply_markup=get_location_method_keyboard()
     )
 
 
@@ -247,7 +449,7 @@ async def start_edit_field(callback: CallbackQuery, state: FSMContext):
         await state.update_data(resume_message_id=callback.message.message_id)
         
         if field == "location":
-            await callback.message.answer(prompt, reply_markup=get_location_keyboard())
+            await callback.message.answer(prompt, reply_markup=get_location_method_keyboard())
         else:
             # Проверяем, есть ли фото в сообщении
             if callback.message.photo:
@@ -555,24 +757,31 @@ async def edit_location(message: Message, session: AsyncSession, state: FSMConte
             )
         return
     
-    if not message.location:
-        await message.answer("Пожалуйста, отправьте геолокацию или нажмите 'Отмена'", reply_markup=ReplyKeyboardRemove())
+    # Если нажата кнопка ввода адреса
+    if message.text and texts.BTN_ENTER_ADDRESS in message.text:
+        await message.answer(
+            texts.LOCATION_ADDRESS_INPUT,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(WorkerStates.waiting_for_address)
         return
     
-    await crud.update_user(
-        session, message.from_user.id,
-        latitude=message.location.latitude,
-        longitude=message.location.longitude
-    )
-    await state.clear()
-    
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    
-    user = await crud.get_user(session, message.from_user.id)
-    resume_preview = f"""📝 Ваше резюме:
+    # Если отправлено текущее местоположение
+    if message.location:
+        await crud.update_user(
+            session, message.from_user.id,
+            latitude=message.location.latitude,
+            longitude=message.location.longitude
+        )
+        await state.clear()
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
 
 👤 Имя: {user.name}
 🎂 Возраст: {user.age}
@@ -580,21 +789,142 @@ async def edit_location(message: Message, session: AsyncSession, state: FSMConte
 📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
 
 Выберите что изменить:"""
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
     
-    try:
-        await bot.edit_message_caption(
-            chat_id=message.chat.id,
-            message_id=resume_message_id,
-            caption=resume_preview,
-            reply_markup=get_resume_edit_keyboard()
+    # Если данные из Web App
+    if message.web_app_data:
+        try:
+            import json
+            web_data = json.loads(message.web_app_data.data)
+            lat = float(web_data.get("lat"))
+            lon = float(web_data.get("lon"))
+            
+            # Валидация координат
+            if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                raise ValueError("Invalid coordinates")
+            
+            await crud.update_user(
+                session, message.from_user.id,
+                latitude=lat,
+                longitude=lon
+            )
+            await state.clear()
+            
+            user = await crud.get_user(session, message.from_user.id)
+            resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+            
+            try:
+                await bot.edit_message_caption(
+                    chat_id=message.chat.id,
+                    message_id=resume_message_id,
+                    caption=resume_preview,
+                    reply_markup=get_resume_edit_keyboard()
+                )
+            except Exception:
+                await bot.send_photo(
+                    chat_id=message.from_user.id,
+                    photo=user.photo_id,
+                    caption=resume_preview,
+                    reply_markup=get_resume_edit_keyboard()
+                )
+            return
+        except Exception:
+            await message.answer(
+                "❌ Ошибка при обработке данных с карты. Попробуйте еще раз.",
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+    
+    # Если введен адрес (для редактирования)
+    if message.text and message.text.strip() != "❌ Отмена":
+        address = message.text.strip()
+        
+        # Показываем индикатор загрузки
+        loading_msg = await message.answer("🔍 Ищу адрес...")
+        
+        # Геокодинг адреса
+        result = await geocode_address(address)
+        
+        # Удаляем сообщение о загрузке
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
+        
+        if result is None:
+            await message.answer(
+                texts.LOCATION_ADDRESS_NOT_FOUND,
+                reply_markup=get_location_method_keyboard()
+            )
+            return
+        
+        lat, lon = result
+        
+        await crud.update_user(
+            session, message.from_user.id,
+            latitude=lat,
+            longitude=lon
         )
-    except Exception:
-        await bot.send_photo(
-            chat_id=message.from_user.id,
-            photo=user.photo_id,
-            caption=resume_preview,
-            reply_markup=get_resume_edit_keyboard()
-        )
+        await state.clear()
+        
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        
+        user = await crud.get_user(session, message.from_user.id)
+        resume_preview = f"""📝 Ваше резюме:
+
+👤 Имя: {user.name}
+🎂 Возраст: {user.age}
+🏙 Город: {user.city}
+📝 О себе: {user.resume[:100]}{"..." if len(user.resume or "") > 100 else ""}
+
+Выберите что изменить:"""
+        
+        try:
+            await bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=resume_message_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        except Exception:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=user.photo_id,
+                caption=resume_preview,
+                reply_markup=get_resume_edit_keyboard()
+            )
+        return
+    
+    # Если ничего не подошло
+    await message.answer(
+        "Пожалуйста, выберите способ указания местоположения или нажмите 'Отмена'",
+        reply_markup=get_location_method_keyboard()
+    )
 
 
 @router.message(WorkerEditStates.editing_resume)

@@ -1,5 +1,6 @@
 """Хендлеры платежей через ЮKassa"""
 
+import logging
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -14,6 +15,7 @@ from bot.services.payments import (
 )
 
 router = Router(name="payments")
+logger = logging.getLogger(__name__)
 
 
 # ============== Покупка подписки работника ==============
@@ -48,8 +50,9 @@ async def buy_subscription(callback: CallbackQuery, session: AsyncSession, bot: 
             reply_markup=keyboard
         )
     except Exception as e:
+        logger.error(f"Error creating payment for subscription: {e}", exc_info=True)
         await callback.message.answer(
-            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+            f"❌ Извините, оплата временно не работает. Обратитесь к администратору.\n\nОшибка: {str(e)}"
         )
 
 
@@ -93,8 +96,9 @@ async def pay_vacancy_publication(callback: CallbackQuery, session: AsyncSession
             reply_markup=keyboard
         )
     except Exception as e:
+        logger.error(f"Error creating payment for subscription: {e}", exc_info=True)
         await callback.message.answer(
-            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+            f"❌ Извините, оплата временно не работает. Обратитесь к администратору.\n\nОшибка: {str(e)}"
         )
 
 
@@ -148,8 +152,9 @@ async def pay_boost_vacancy(callback: CallbackQuery, session: AsyncSession, bot:
                 reply_markup=keyboard
             )
     except Exception as e:
+        logger.error(f"Error creating payment for subscription: {e}", exc_info=True)
         await callback.message.answer(
-            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+            f"❌ Извините, оплата временно не работает. Обратитесь к администратору.\n\nОшибка: {str(e)}"
         )
 
 
@@ -217,8 +222,9 @@ async def pay_pin_vacancy(callback: CallbackQuery, session: AsyncSession, bot: B
                 reply_markup=keyboard
             )
     except Exception as e:
+        logger.error(f"Error creating payment for subscription: {e}", exc_info=True)
         await callback.message.answer(
-            "❌ Извините, оплата временно не работает. Обратитесь к администратору."
+            f"❌ Извините, оплата временно не работает. Обратитесь к администратору.\n\nОшибка: {str(e)}"
         )
 
 

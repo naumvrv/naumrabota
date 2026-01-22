@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Выбор местоположения</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+        }
+        
+        #map {
+            width: 100%;
+            height: calc(100vh - 80px);
+            position: relative;
+        }
+        
+        .controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 80px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            border-top: 1px solid var(--tg-theme-hint-color, #cccccc);
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            z-index: 1000;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .info {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, #666666);
+            margin-bottom: 5px;
+            text-align: center;
+        }
+        
+        .button {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.2s;
+        }
+        
+        .button:active {
+            opacity: 0.8;
+        }
+        
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .marker-info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .marker-info.active {
+            display: block;
+        }
+        
+        .coordinates {
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, #666666);
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="marker-info" id="markerInfo">
+        <div>📍 Местоположение выбрано</div>
+        <div class="coordinates" id="coordinates"></div>
+    </div>
+    <div class="controls">
+        <div class="info">Нажмите на карту, чтобы выбрать местоположение</div>
+        <button class="button" id="confirmBtn" disabled>Подтвердить выбор</button>
+    </div>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        let map;
+        let marker = null;
+        let selectedLocation = null;
+        
+        // Инициализация Telegram Web App
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+        
+        // Определяем начальные координаты
+        let initialLat = 55.7558; // Москва по умолчанию
+        let initialLon = 37.6173;
+        let initialZoom = 10;
+        
+        // Пытаемся получить местоположение пользователя
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    initialLat = position.coords.latitude;
+                    initialLon = position.coords.longitude;
+                    initialZoom = 13;
+                    initMap();
+                },
+                () => {
+                    initMap();
+                }
+            );
+        } else {
+            initMap();
+        }
+        
+        function initMap() {
+            // Инициализация карты
+            map = L.map('map', {
+                zoomControl: true,
+                attributionControl: true
+            }).setView([initialLat, initialLon], initialZoom);
+            
+            // Добавляем тайлы OpenStreetMap
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+            
+            // Обработчик клика на карте
+            map.on('click', (e) => {
+                const lat = e.latlng.lat;
+                const lon = e.latlng.lng;
+                
+                // Валидация координат
+                if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                    return;
+                }
+                
+                selectedLocation = { lat, lon };
+                
+                // Удаляем предыдущий маркер
+                if (marker) {
+                    map.removeLayer(marker);
+                }
+                
+                // Добавляем новый маркер
+                marker = L.marker([lat, lon], {
+                    draggable: true
+                }).addTo(map);
+                
+                // Обновляем информацию
+                updateMarkerInfo(lat, lon);
+                
+                // Включаем кнопку подтверждения
+                document.getElementById('confirmBtn').disabled = false;
+                
+                // Обработчик перетаскивания маркера
+                marker.on('dragend', (e) => {
+                    const pos = e.target.getLatLng();
+                    selectedLocation = { lat: pos.lat, lon: pos.lng };
+                    updateMarkerInfo(pos.lat, pos.lng);
+                });
+            });
+        }
+        
+        function updateMarkerInfo(lat, lon) {
+            const infoDiv = document.getElementById('markerInfo');
+            const coordsDiv = document.getElementById('coordinates');
+            coordsDiv.textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+            infoDiv.classList.add('active');
+        }
+        
+        // Обработчик подтверждения
+        document.getElementById('confirmBtn').addEventListener('click', () => {
+            if (selectedLocation) {
+                // Отправляем данные в бот
+                tg.sendData(JSON.stringify({
+                    lat: selectedLocation.lat,
+                    lon: selectedLocation.lon
+                }));
+                
+                // Закрываем Web App
+                tg.close();
+            }
+        });
+        
+        // Обработка закрытия Web App
+        tg.onEvent('viewportChanged', () => {
+            tg.expand();
+        });
+    </script>
+</body>
+</html>
