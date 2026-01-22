@@ -6,6 +6,8 @@
     <title>Выбор местоположения</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder@1.13.0/dist/Control.Geocoder.css" />
+    <script src="https://unpkg.com/leaflet-control-geocoder@1.13.0/dist/Control.Geocoder.js"></script>
     <style>
         * {
             margin: 0;
@@ -95,6 +97,11 @@
             color: var(--tg-theme-hint-color, #666666);
             margin-top: 5px;
         }
+        
+        /* Скрываем атрибуцию Leaflet */
+        .leaflet-control-attribution {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
@@ -145,12 +152,13 @@
             // Инициализация карты
             map = L.map('map', {
                 zoomControl: true,
-                attributionControl: true
+                attributionControl: false  // Отключаем атрибуцию
             }).setView([initialLat, initialLon], initialZoom);
             
-            // Добавляем тайлы OpenStreetMap
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors',
+            // Используем CartoDB Positron - нейтральный тайловый сервис без политических символов
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                attribution: '',
+                subdomains: 'abcd',
                 maxZoom: 19
             }).addTo(map);
             

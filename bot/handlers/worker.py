@@ -231,6 +231,9 @@ async def process_address(message: Message, session: AsyncSession, state: FSMCon
         except Exception:
             pass
         
+        # Отправляем сообщение об успешном сохранении
+        await message.answer("✅ Геопозиция обновлена!")
+        
         user = await crud.get_user(session, message.from_user.id)
         resume_preview = f"""📝 Ваше резюме:
 
@@ -763,6 +766,7 @@ async def edit_location(message: Message, session: AsyncSession, state: FSMConte
             texts.LOCATION_ADDRESS_INPUT,
             reply_markup=ReplyKeyboardRemove()
         )
+        await state.update_data(editing_location=True)
         await state.set_state(WorkerStates.waiting_for_address)
         return
     
@@ -858,7 +862,10 @@ async def edit_location(message: Message, session: AsyncSession, state: FSMConte
             return
     
     # Если введен адрес (для редактирования)
-    if message.text and message.text.strip() != "❌ Отмена":
+    # Проверяем, что состояние еще editing_location (не waiting_for_address)
+    current_state = await state.get_state()
+    if (message.text and message.text.strip() != "❌ Отмена" and 
+        current_state == WorkerEditStates.editing_location):
         address = message.text.strip()
         
         # Показываем индикатор загрузки
@@ -893,6 +900,9 @@ async def edit_location(message: Message, session: AsyncSession, state: FSMConte
             await message.delete()
         except Exception:
             pass
+        
+        # Отправляем сообщение об успешном сохранении
+        await message.answer("✅ Геопозиция обновлена!")
         
         user = await crud.get_user(session, message.from_user.id)
         resume_preview = f"""📝 Ваше резюме:
